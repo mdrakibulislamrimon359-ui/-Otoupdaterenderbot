@@ -2,6 +2,7 @@
 # RJ TEAM BANGLADESH - PREMIUM AI BOT
 # Owner: @RJteam1
 # Gemini + Telegram + Firebase + Multi-Group Auto Post
+# + AI POST SYSTEM
 # ============================================================
 
 import os
@@ -38,8 +39,15 @@ from telegram.ext import (
 # CONFIG
 # ============================================================
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+BOT_TOKEN = os.getenv(
+    "BOT_TOKEN",
+    ""
+).strip()
+
+GEMINI_API_KEY = os.getenv(
+    "GEMINI_API_KEY",
+    ""
+).strip()
 
 ADMIN_USERNAME = os.getenv(
     "ADMIN_USERNAME",
@@ -117,6 +125,10 @@ GEMINI_MODELS = [
 ]
 
 
+# ============================================================
+# NORMAL AI PROMPT
+# ============================================================
+
 SYSTEM_PROMPT = """
 You are RJ Team Bangladesh Premium AI Bot.
 
@@ -134,11 +146,47 @@ actually performed that action.
 """
 
 
+# ============================================================
+# AI POST PROMPT
+# ============================================================
+
+POST_SYSTEM_PROMPT = """
+You are the official social media post writer for
+RJ Team Bangladesh.
+
+The Owner will give you a short instruction, idea, sentence,
+announcement, offer, greeting, or topic.
+
+Your job is to turn it into a beautiful ready-to-publish
+Telegram group post.
+
+Rules:
+
+1. Write in natural Bangla.
+2. Make it attractive and professional.
+3. Use suitable emojis, but do not overuse them.
+4. Add a clear heading when appropriate.
+5. Use spacing so the post is easy to read.
+6. Keep the original meaning.
+7. Do not invent prices, links, phone numbers, dates,
+   offers, guarantees, or facts that were not provided.
+8. Do not mention that AI created the post.
+9. Do not say "জি বস".
+10. Do not add explanations before or after the post.
+11. Return ONLY the final post.
+12. If the Owner asks for a greeting, announcement,
+    promotional post, community message, warning,
+    update, or caption, make it ready to publish.
+"""
+
+
 ABOUT_TEXT = f"""
 🤖 RJ TEAM BANGLADESH - PREMIUM AI BOT
 
 ✨ Gemini AI Assistant
 📢 Multi Group Auto Post
+📝 AI Post Creator
+🖼️ AI Photo Caption
 🔥 Firebase Data Storage
 🌐 Translation Support
 
@@ -191,10 +239,12 @@ def init_firebase():
     global firebase_db
 
     if not FIREBASE_SERVICE_ACCOUNT_JSON:
+
         logger.warning(
             "FIREBASE_SERVICE_ACCOUNT_JSON not found. "
             "Using local storage."
         )
+
         return
 
     try:
@@ -332,6 +382,66 @@ def save_autopost_data():
     )
 
 
+def clean_invalid_groups():
+
+    """
+    Telegram group/supergroup IDs are normally negative.
+    This removes accidental personal user IDs such as
+    8110936695 that may have been saved previously.
+    """
+
+    groups = autopost_data.get(
+        "groups",
+        {}
+    )
+
+    cleaned = {}
+
+    changed = False
+
+    for key, value in groups.items():
+
+        try:
+
+            chat_id = int(
+                str(
+                    value.get(
+                        "chat_id",
+                        key
+                    )
+                )
+            )
+
+        except Exception:
+
+            changed = True
+            continue
+
+        # Real Telegram groups/supergroups normally
+        # use negative IDs.
+        if chat_id >= 0:
+
+            logger.warning(
+                "Removing invalid non-group chat ID: %s",
+                chat_id
+            )
+
+            changed = True
+            continue
+
+        value["chat_id"] = chat_id
+
+        cleaned[
+            str(chat_id)
+        ] = value
+
+    autopost_data[
+        "groups"
+    ] = cleaned
+
+    return changed
+
+
 def load_local():
 
     if not os.path.exists(
@@ -433,13 +543,19 @@ def load_autopost_data():
         load_local()
 
         if firebase_db is not None:
+
             firebase_save(
                 autopost_data
             )
 
+    changed = clean_invalid_groups()
+
     normalize_post_ids(
         save=False
     )
+
+    if changed:
+        save_autopost_data()
 
 
 # ============================================================
@@ -494,11 +610,16 @@ def owner_reply(text):
 def parse_chat_id(value):
 
     try:
+
         return int(
             str(value).strip()
         )
+
     except Exception:
-        return str(value).strip()
+
+        return str(
+            value
+        ).strip()
 
 
 def parse_time(value):
@@ -608,6 +729,17 @@ def active_groups():
             True
         )
     }
+
+
+def is_real_group_chat(chat):
+
+    if not chat:
+        return False
+
+    return chat.type in (
+        "group",
+        "supergroup"
+    )
 
 
 # ============================================================
@@ -721,8 +853,103 @@ async def ask_gemini(
     )
 
 
+async def create_ai_post(
+    instruction
+):
+
+    if gemini_client is None:
+
+        return (
+            "দুঃখিত, Gemini API "
+            "configure করা নেই।"
+        )
+
+    last_error = None
+
+    prompt = (
+        POST_SYSTEM_PROMPT
+        + "\n\n"
+        + "Owner instruction:\n"
+        + instruction
+    )
+
+    for model in GEMINI_MODELS:
+
+        try:
+
+            response = await asyncio.to_thread(
+
+                gemini_client
+                .models
+                .generate_content,
+
+                model=model,
+
+                contents=[
+                    types.Content(
+                        role="user",
+                        parts=[
+                            types.Part.from_text(
+                                text=prompt
+                            )
+                        ],
+                    )
+                ],
+            )
+
+            answer = getattr(
+                response,
+                "text",
+                None
+            )
+
+            if answer:
+
+                answer = answer.strip()
+
+                # Remove accidental markdown fences.
+                answer = re.sub(
+                    r"^```(?:text|markdown)?\s*",
+                    "",
+                    answer,
+                    flags=re.I
+                )
+
+                answer = re.sub(
+                    r"\s*```$",
+                    "",
+                    answer
+                )
+
+                return answer.strip()
+
+        except Exception as e:
+
+            last_error = e
+
+            logger.warning(
+                "AI post model %s failed: %s",
+                model,
+                e
+            )
+
+            await asyncio.sleep(
+                0.5
+            )
+
+    logger.error(
+        "AI post generation failed: %s",
+        last_error
+    )
+
+    return (
+        "দুঃখিত বস, এই মুহূর্তে "
+        "সুন্দর পোস্ট তৈরি করা যাচ্ছে না।"
+    )
+
+
 # ============================================================
-# AUTO POST
+# GROUP FUNCTIONS
 # ============================================================
 
 def add_group(
@@ -730,7 +957,24 @@ def add_group(
     title=None
 ):
 
-    key = str(chat_id)
+    try:
+
+        chat_id = int(
+            chat_id
+        )
+
+    except Exception:
+
+        return False
+
+    # Never save private user IDs.
+    if chat_id >= 0:
+
+        return False
+
+    key = str(
+        chat_id
+    )
 
     if key in autopost_data[
         "groups"
@@ -761,7 +1005,9 @@ def delete_group(
     chat_id
 ):
 
-    key = str(chat_id)
+    key = str(
+        chat_id
+    )
 
     if key not in autopost_data[
         "groups"
@@ -772,6 +1018,25 @@ def delete_group(
     del autopost_data[
         "groups"
     ][key]
+
+    # Remove deleted group from scheduled posts.
+    for post in autopost_data[
+        "posts"
+    ]:
+
+        group_ids = post.get(
+            "group_ids"
+        )
+
+        if group_ids:
+
+            post[
+                "group_ids"
+            ] = [
+                str(x)
+                for x in group_ids
+                if str(x) != key
+            ]
 
     save_autopost_data()
 
@@ -822,7 +1087,9 @@ def add_post(
 
     autopost_data[
         "posts"
-    ].append(post)
+    ].append(
+        post
+    )
 
     normalize_post_ids(
         save=False
@@ -996,6 +1263,91 @@ def list_posts_text():
 
 
 # ============================================================
+# SEND AI POST TO GROUPS
+# ============================================================
+
+async def send_post_to_groups(
+    bot,
+    post_text,
+    photo_id=None,
+    current_chat=None
+):
+
+    groups = active_groups()
+
+    # If Owner sends from a real group and that group
+    # is not yet registered, use it as a convenient fallback.
+    if (
+        not groups
+        and current_chat
+        and is_real_group_chat(
+            current_chat
+        )
+    ):
+
+        add_group(
+            current_chat.id,
+            current_chat.title
+            or str(current_chat.id)
+        )
+
+        groups = active_groups()
+
+    if not groups:
+
+        return 0, 0
+
+    sent = 0
+    failed = 0
+
+    for key in groups:
+
+        chat_id = parse_chat_id(
+            key
+        )
+
+        try:
+
+            if photo_id:
+
+                await bot.send_photo(
+
+                    chat_id=chat_id,
+
+                    photo=photo_id,
+
+                    caption=(
+                        post_text[:1024]
+                        if post_text
+                        else None
+                    )
+                )
+
+            else:
+
+                await bot.send_message(
+
+                    chat_id=chat_id,
+
+                    text=post_text[:4096]
+                )
+
+            sent += 1
+
+        except Exception as e:
+
+            failed += 1
+
+            logger.warning(
+                "AI Post failed for %s: %s",
+                chat_id,
+                e
+            )
+
+    return sent, failed
+
+
+# ============================================================
 # PUBLIC COMMANDS
 # ============================================================
 
@@ -1067,7 +1419,13 @@ async def help_command(
         "/start - Start\n"
         "/help - Help\n"
         "/about - About\n"
-        "/translate <text> - Translate\n\n"
+        "/translate <text> - Translate\n"
+        "/translate_last - Last AI reply translate\n\n"
+
+        "👑 OWNER AI POST\n"
+
+        "/post <instruction> - AI দিয়ে পোস্ট\n"
+        "/ai <question> - শুধু AI উত্তর\n\n"
 
         "👑 OWNER COMMANDS\n"
 
@@ -1087,8 +1445,9 @@ async def help_command(
         "/test\n"
         "/cancel\n\n"
 
-        "Owner চাইলে SMS দিয়েও "
-        "safe bot controls ব্যবহার করতে পারবেন।"
+        "💡 Owner সাধারণ SMS পাঠালেও "
+        "সেটা AI দিয়ে সুন্দর করে active group-এ "
+        "Post করা হবে।"
     )
 
 
@@ -1166,6 +1525,146 @@ async def translate_last_command(
 
 
 # ============================================================
+# OWNER /post COMMAND
+# ============================================================
+
+async def post_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not is_admin(update):
+        return
+
+    instruction = " ".join(
+        context.args
+    ).strip()
+
+    replied = (
+        update.message.reply_to_message
+    )
+
+    photo_id = None
+
+    if replied:
+
+        if replied.photo:
+
+            photo_id = (
+                replied.photo[-1].file_id
+            )
+
+            if not instruction:
+
+                instruction = (
+                    replied.caption
+                    or
+                    "এই ছবির জন্য সুন্দর "
+                    "একটি Telegram পোস্ট "
+                    "তৈরি করো।"
+                )
+
+        elif (
+            replied.text
+            and not instruction
+        ):
+
+            instruction = replied.text
+
+    if not instruction:
+
+        await update.message.reply_text(
+            owner_reply(
+                "কী পোস্ট করতে হবে সেটা লিখুন।\n\n"
+                "উদাহরণ:\n"
+                "/post আজকের জন্য শুভ সন্ধ্যার পোস্ট দাও"
+            )
+        )
+
+        return
+
+    ai_post = await create_ai_post(
+        instruction
+    )
+
+    sent, failed = (
+        await send_post_to_groups(
+            update.get_bot(),
+            ai_post,
+            photo_id=photo_id,
+            current_chat=update.effective_chat
+        )
+    )
+
+    if sent == 0:
+
+        await update.message.reply_text(
+            owner_reply(
+                "কোনো active group পাওয়া যায়নি।\n"
+                "আগে আসল Telegram group-এর ভিতরে "
+                "/addgroup দিন।"
+            )
+        )
+
+        return
+
+    await update.message.reply_text(
+
+        owner_reply(
+
+            f"সুন্দর পোস্ট তৈরি করে "
+            f"{sent}টি group-এ পাঠিয়েছি।"
+            + (
+                f" ব্যর্থ: {failed}"
+                if failed
+                else ""
+            )
+        )
+    )
+
+
+# ============================================================
+# OWNER /ai COMMAND
+# ============================================================
+
+async def ai_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not is_admin(update):
+        return
+
+    prompt = " ".join(
+        context.args
+    ).strip()
+
+    if not prompt:
+
+        await update.message.reply_text(
+            owner_reply(
+                "AI-কে কী জিজ্ঞেস করবেন লিখুন।\n\n"
+                "উদাহরণ:\n"
+                "/ai একটি সুন্দর শুভ সকাল message দাও"
+            )
+        )
+
+        return
+
+    answer = await ask_gemini(
+        prompt
+    )
+
+    user_last_ai_reply[
+        update.effective_user.id
+    ] = answer
+
+    await update.message.reply_text(
+        owner_reply(answer)
+    )
+
+
+# ============================================================
 # OWNER COMMANDS
 # ============================================================
 
@@ -1208,6 +1707,25 @@ async def addgroup_command(
     if not chat:
         return
 
+    # IMPORTANT:
+    # /addgroup must be used inside a real group.
+    if not is_real_group_chat(
+        chat
+    ):
+
+        await update.message.reply_text(
+
+            owner_reply(
+
+                "এই commandটি আসল Telegram "
+                "group/supergroup-এর ভিতর থেকে দিতে হবে।\n\n"
+                "সেই group-এ bot-কে admin করে "
+                "তারপর /addgroup দিন।"
+            )
+        )
+
+        return
+
     title = (
         chat.title
         or chat.username
@@ -1245,6 +1763,11 @@ async def groups_command(
     if not is_admin(update):
         return
 
+    # Clean any old invalid IDs.
+    if clean_invalid_groups():
+
+        save_autopost_data()
+
     groups = autopost_data[
         "groups"
     ]
@@ -1253,7 +1776,9 @@ async def groups_command(
 
         await update.message.reply_text(
             owner_reply(
-                "কোনো group নেই।"
+                "কোনো real group নেই।\n\n"
+                "যে group-এ post করতে চান, "
+                "সেই group-এর ভিতরে /addgroup দিন।"
             )
         )
 
@@ -1301,7 +1826,8 @@ async def delgroup_command(
 
         await update.message.reply_text(
             owner_reply(
-                "Chat ID দিন।"
+                "Chat ID দিন।\n"
+                "উদাহরণ: /delgroup -1001234567890"
             )
         )
 
@@ -2022,7 +2548,20 @@ async def handle_owner_natural_command(
 
         chat = update.effective_chat
 
-        if chat and add_group(
+        if not is_real_group_chat(
+            chat
+        ):
+
+            await update.message.reply_text(
+                owner_reply(
+                    "এই commandটি আসল Telegram "
+                    "group/supergroup-এর ভিতর থেকে দিতে হবে।"
+                )
+            )
+
+            return True
+
+        if add_group(
             chat.id,
             chat.title
             or str(chat.id)
@@ -2228,13 +2767,13 @@ async def handle_owner_natural_command(
             ].keys()
         )
 
-        # If no group is configured,
-        # use the current group.
         if not groups:
 
             chat = update.effective_chat
 
-            if chat:
+            if is_real_group_chat(
+                chat
+            ):
 
                 add_group(
                     chat.id,
@@ -2245,6 +2784,18 @@ async def handle_owner_natural_command(
                 groups = [
                     str(chat.id)
                 ]
+
+        if not groups:
+
+            await update.message.reply_text(
+                owner_reply(
+                    "Auto Post save করার জন্য "
+                    "কোনো active group নেই।\n"
+                    "আগে group-এর ভিতরে /addgroup দিন।"
+                )
+            )
+
+            return True
 
         post = add_post(
 
@@ -2269,7 +2820,53 @@ async def handle_owner_natural_command(
 
         return True
 
-    return False
+    # --------------------------------------------------------
+    # IMPORTANT:
+    # Any other Owner text becomes an AI-created post.
+    # --------------------------------------------------------
+
+    ai_post = await create_ai_post(
+        raw
+    )
+
+    sent, failed = (
+        await send_post_to_groups(
+            update.get_bot(),
+            ai_post,
+            current_chat=update.effective_chat
+        )
+    )
+
+    if sent > 0:
+
+        await update.message.reply_text(
+
+            owner_reply(
+
+                f"সুন্দর পোস্ট তৈরি করে "
+                f"{sent}টি group-এ পাঠিয়েছি।"
+                + (
+                    f" ব্যর্থ: {failed}"
+                    if failed
+                    else ""
+                )
+            )
+        )
+
+    else:
+
+        await update.message.reply_text(
+
+            owner_reply(
+
+                "কোনো active group পাওয়া যায়নি।\n\n"
+                "যে Telegram group-এ post করতে চান, "
+                "সেই group-এর ভিতরে bot-কে admin করে "
+                "/addgroup দিন।"
+            )
+        )
+
+    return True
 
 
 # ============================================================
@@ -2302,6 +2899,87 @@ async def callback_handler(
 
 
 # ============================================================
+# PHOTO MESSAGE HANDLER
+# ============================================================
+
+async def handle_photo_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not update.message:
+        return
+
+    # Only Owner can use AI group-post photo system.
+    if not is_admin(update):
+        return
+
+    photo = update.message.photo
+
+    if not photo:
+        return
+
+    photo_id = (
+        photo[-1].file_id
+    )
+
+    instruction = (
+        update.message.caption
+        or ""
+    ).strip()
+
+    if not instruction:
+
+        instruction = (
+            "এই ছবির জন্য একটি "
+            "সুন্দর, আকর্ষণীয় Telegram "
+            "group caption/post তৈরি করো।"
+        )
+
+    ai_caption = await create_ai_post(
+        instruction
+    )
+
+    sent, failed = (
+        await send_post_to_groups(
+            update.get_bot(),
+            ai_caption,
+            photo_id=photo_id,
+            current_chat=update.effective_chat
+        )
+    )
+
+    if sent > 0:
+
+        await update.message.reply_text(
+
+            owner_reply(
+
+                f"🖼️ ছবির জন্য সুন্দর caption "
+                f"তৈরি করে {sent}টি group-এ "
+                "পাঠিয়েছি."
+                + (
+                    f" ব্যর্থ: {failed}"
+                    if failed
+                    else ""
+                )
+            )
+        )
+
+    else:
+
+        await update.message.reply_text(
+
+            owner_reply(
+
+                "কোনো active group পাওয়া যায়নি।\n"
+                "আগে real group-এর ভিতরে "
+                "/addgroup দিন।"
+            )
+        )
+
+
+# ============================================================
 # NORMAL MESSAGE HANDLER
 # ============================================================
 
@@ -2313,12 +2991,15 @@ async def handle_message(
     if not update.message:
         return
 
-    text = update.message.text
+    text = (
+        update.message.text
+    )
 
     if not text:
         return
 
-    # Owner commands first.
+    # Owner:
+    # First check safe controls.
     if is_admin(update):
 
         handled = (
@@ -2331,7 +3012,7 @@ async def handle_message(
         if handled:
             return
 
-    # Normal Gemini reply.
+    # Normal users still get normal Gemini AI reply.
     answer = await ask_gemini(
         text
     )
@@ -2343,13 +3024,6 @@ async def handle_message(
     user_last_ai_reply[
         user_id
     ] = answer
-
-    # Every Owner AI reply gets "বস".
-    if is_admin(update):
-
-        answer = owner_reply(
-            answer
-        )
 
     keyboard = [
 
@@ -2542,7 +3216,6 @@ async def auto_post_worker(
                     marker
                 )
 
-            # Prevent unlimited memory growth.
             if len(last_sent) > 5000:
 
                 last_sent = set(
@@ -2597,13 +3270,60 @@ def main():
 
     load_autopost_data()
 
+    # Optional TARGET_CHAT_ID:
+    # only add if it is a real Telegram group ID.
+    if TARGET_CHAT_ID:
+
+        try:
+
+            target_id = int(
+                TARGET_CHAT_ID
+            )
+
+            if target_id < 0:
+
+                if str(
+                    target_id
+                ) not in autopost_data[
+                    "groups"
+                ]:
+
+                    add_group(
+                        target_id,
+                        str(target_id)
+                    )
+
+        except Exception:
+
+            logger.warning(
+                "TARGET_CHAT_ID is invalid "
+                "or not a group ID."
+            )
+
     init_gemini()
+
+    # --------------------------------------------------------
+    # POST INIT
+    # --------------------------------------------------------
+
+    async def post_init(
+        app
+    ):
+
+        app.create_task(
+            auto_post_worker(
+                app
+            )
+        )
 
     application = (
         Application
         .builder()
         .token(
             BOT_TOKEN
+        )
+        .post_init(
+            post_init
         )
         .build()
     )
@@ -2648,7 +3368,25 @@ def main():
     )
 
     # --------------------------------------------------------
-    # OWNER
+    # OWNER AI
+    # --------------------------------------------------------
+
+    application.add_handler(
+        CommandHandler(
+            "post",
+            post_command
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "ai",
+            ai_command
+        )
+    )
+
+    # --------------------------------------------------------
+    # OWNER COMMANDS
     # --------------------------------------------------------
 
     application.add_handler(
@@ -2767,6 +3505,21 @@ def main():
     )
 
     # --------------------------------------------------------
+    # OWNER PHOTO
+    # --------------------------------------------------------
+
+    application.add_handler(
+
+        MessageHandler(
+
+            filters.PHOTO
+            & ~filters.COMMAND,
+
+            handle_photo_message
+        )
+    )
+
+    # --------------------------------------------------------
     # TEXT
     # --------------------------------------------------------
 
@@ -2783,18 +3536,6 @@ def main():
 
     application.add_error_handler(
         error_handler
-    )
-
-    async def post_init(app):
-
-        app.create_task(
-            auto_post_worker(
-                app
-            )
-        )
-
-    application.post_init = (
-        post_init
     )
 
     logger.info(
