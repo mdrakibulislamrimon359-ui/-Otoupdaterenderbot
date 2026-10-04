@@ -375,56 +375,95 @@ def extract_group_post(text):
 
 async def resolve_chat_reference(context, reference):
     """
-    Resolve:
-      @username
-      username
-      numeric Telegram chat ID
+    Resolve a Telegram Group/Supergroup/Channel from:
+      • @username
+      • username
+      • numeric chat ID
+      • t.me/username
 
-    Important:
-    Telegram Bot API cannot discover or join an arbitrary private
-    group/channel just from a username. The bot must already have
-    access to the target chat.
+    NOTE:
+    Bot API can only access a target chat when Telegram allows the bot
+    to resolve/access it. For private chats, use a forwarded message
+    from that chat (see /addgroup reply mode).
     """
-
     reference = (reference or "").strip()
 
     if not reference:
         return None, "❌ Group/Channel username বা Chat ID দিন।"
 
+    reference = re.sub(r"^https?://t\.me/", "", reference, flags=re.I).strip("/")
+    reference = reference.split("?", 1)[0]
+
     try:
         if re.fullmatch(r"-?\d+", reference):
-            chat = await context.bot.get_chat(
-                int(reference)
-            )
-        else:
-            username = reference.lstrip("@")
+            return await context.bot.get_chat(int(reference)), None
 
-            if not username:
-                return None, "❌ Username সঠিক নয়।"
+        username = reference.lstrip("@").strip()
+        if not username:
+            return None, "❌ Username সঠিক নয়।"
 
-            chat = await context.bot.get_chat(
-                "@" + username
-            )
-
-        return chat, None
+        return await context.bot.get_chat("@" + username), None
 
     except Exception as e:
-        logging.warning(
-            "Could not resolve chat %s: %s",
-            reference,
-            e
+        logging.warning("Could not resolve chat %s: %s", reference, e)
+        return None, (
+            "❌ Telegram এই Group/Channel-টি resolve করতে পারেনি।\n\n"
+            f"🔎 Target: {reference}\n\n"
+            "এভাবে চেষ্টা করুন:\n"
+            "1️⃣ Bot-কে target Group/Channel-এ আগে Add করুন।\n"
+            "2️⃣ Channel হলে Bot-কে Admin + Post Messages permission দিন।\n"
+            "3️⃣ Public username ঠিক আছে কিনা দেখুন।\n"
+            "4️⃣ Private chat হলে target chat-এর একটি message Bot-কে Forward করে "
+            "সেই message-এর reply হিসেবে `/addgroup` দিন।"
         )
 
-        return None, (
-            "❌ Group/Channel পাওয়া যায়নি।\n\n"
-            f"🔎 দেওয়া হয়েছে: {reference}\n\n"
-            "সম্ভাব্য কারণ:\n"
-            "• Bot ওই Group/Channel-এ নেই\n"
-            "• Username ভুল\n"
-            "• Channel হলে Bot-কে Admin করা হয়নি\n"
-            "• Private Group/Channel-এর public username নেই\n"
-            "• Telegram API target chat resolve করতে পারেনি"
-        )
+def get_forwarded_chat_from_message(message):
+    """Return the source chat object from a forwarded Telegram message."""
+    if not message:
+        return None
+
+    origin = getattr(message, "forward_origin", None)
+    if origin:
+        # python-telegram-bot MessageOriginChat / MessageOriginChannel
+        sender_chat = getattr(origin, "sender_chat", None)
+        if sender_chat:
+            return sender_chat
+
+        chat = getattr(origin, "chat", None)
+        if chat:
+            return chat
+
+    # Older PTB compatibility
+    forward_from_chat = getattr(message, "forward_from_chat", None)
+    if forward_from_chat:
+        return forward_from_chat
+
+    return None
+
+async def resolve_add_target_from_reply(update, context):
+    """
+    If /addgroup or /addchannel is sent as a reply to a forwarded message,
+    use the original source chat as the target.
+    """
+    message = update.effective_message
+    if not message:
+        return None
+
+    reply = getattr(message, "reply_to_message", None)
+    if not reply:
+        return None
+
+    source_chat = get_forwarded_chat_from_message(reply)
+    if source_chat:
+        return source_chat
+
+    # If the owner simply replies to a message that belongs to a group,
+    # use that chat when it is not a private chat.
+    reply_chat = getattr(reply, "chat", None)
+    if reply_chat and getattr(reply_chat, "type", None) in ("group", "supergroup", "channel"):
+        return reply_chat
+
+    return None
 
 async def check_chat_permissions(context, chat):
     """
@@ -507,58 +546,31 @@ async def add_chat_destination(update, context):
     current_chat = update.effective_chat
     args = context.args
 
-    # Current Group/Channel
-    if not args:
-        if not current_chat:
-            await message.reply_text(
-                error_box("❌ Current chat পাওয়া যায়নি।")
-            )
-            return
-
-        if current_chat.type not in (
-            "group",
-            "supergroup",
-            "channel"
-        ):
-            await message.reply_text(
-                error_box(
-                    "বস, Inbox থেকে ব্যবহার করুন:\n\n"
-                    "`/addgroup @username`\n\n"
-                    "অথবা Group/Channel-এর ভিতর শুধু:\n"
-                    "`/addgroup`"
-                )
-            )
-            return
-
-        chat = current_chat
-
-    # Inbox target by username/ID
-    else:
-        reference = args[0]
-
-        chat, error = await resolve_chat_reference(
-            context,
-            reference
-        )
-
+    # 1) /addgroup @username, /addchannel @username, /addgroup -100...
+    if args:
+        chat, error = await resolve_chat_reference(context, args[0])
         if error:
-            await message.reply_text(
-                error_box(error)
-            )
+            await message.reply_text(error_box(error))
             return
 
-        if chat.type not in (
-            "group",
-            "supergroup",
-            "channel"
-        ):
-            await message.reply_text(
-                error_box(
-                    "❌ এই Chat Group/Channel নয়।\n\n"
-                    f"📌 Type: {chat.type}"
+    else:
+        # 2) Inbox reply to a forwarded message
+        chat = await resolve_add_target_from_reply(update, context)
+
+        # 3) Command used inside the target chat
+        if chat is None:
+            if not current_chat or current_chat.type not in ("group", "supergroup", "channel"):
+                await message.reply_text(
+                    error_box(
+                        "বস, Inbox থেকে ব্যবহার করুন:\n\n"
+                        "`/addgroup @username`\n"
+                        "`/addchannel @username`\n\n"
+                        "অথবা target Group/Channel-এর একটি message "
+                        "Forward করে সেই message-এর reply হিসেবে `/addgroup` দিন।"
+                    )
                 )
-            )
-            return
+                return
+            chat = current_chat
 
     allowed, permission_error = await check_chat_permissions(
         context,
