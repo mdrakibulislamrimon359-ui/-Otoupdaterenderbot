@@ -1,682 +1,2863 @@
+# ============================================================
+# RJ TEAM BANGLADESH - PREMIUM AI BOT
+# Owner: @RJteam1
+# Gemini + Telegram + Firebase + Multi-Group Auto Post
+# ============================================================
+
 import os
+import re
+import json
 import asyncio
 import logging
-import random
-import json
-import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import firebase_admin
 from firebase_admin import credentials, firestore
+
 from google import genai
 from google.genai import types
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
+
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
-    ContextTypes, filters,
+    Application,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    filters,
 )
 
-# =========================================================
+
+# ============================================================
 # CONFIG
-# =========================================================
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN is missing")
-if not GEMINI_API_KEY:
-    raise RuntimeError("GEMINI_API_KEY is missing")
+# ============================================================
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+
+ADMIN_USERNAME = os.getenv(
+    "ADMIN_USERNAME",
+    "RJteam1"
+).strip().lstrip("@")
+
+ADMIN_USER_ID = os.getenv(
+    "ADMIN_USER_ID",
+    ""
+).strip()
+
+TARGET_CHAT_ID = os.getenv(
+    "TARGET_CHAT_ID",
+    ""
+).strip()
+
+AUTOPOST_FILE = os.getenv(
+    "AUTOPOST_FILE",
+    "autoposts.json"
 )
-logger = logging.getLogger(__name__)
 
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "RJteam1").strip().lstrip("@")
-ADMIN_USER_ID = os.getenv("ADMIN_USER_ID", "").strip()
-TARGET_CHAT_ID = os.getenv("TARGET_CHAT_ID", "").strip()
-AUTOPOST_FILE = os.getenv("AUTOPOST_FILE", "autoposts.json")
-BD_TZ = ZoneInfo("Asia/Dhaka")
-AUTOPOST_ENABLED = os.getenv("AUTOPOST_ENABLED", "true").strip().lower() == "true"
+AUTOPOST_ENABLED = os.getenv(
+    "AUTOPOST_ENABLED",
+    "true"
+).lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 
-FIREBASE_SERVICE_ACCOUNT_JSON = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON", "").strip()
-FIREBASE_COLLECTION = os.getenv("AUTOPOST_FIREBASE_COLLECTION", "rj_bot_config").strip()
-FIREBASE_DOCUMENT = os.getenv("AUTOPOST_FIREBASE_DOCUMENT", "autopost").strip()
+FIREBASE_SERVICE_ACCOUNT_JSON = os.getenv(
+    "FIREBASE_SERVICE_ACCOUNT_JSON",
+    ""
+).strip()
 
-# =========================================================
-# FIREBASE
-# =========================================================
-def init_firebase():
-    if not FIREBASE_SERVICE_ACCOUNT_JSON:
-        logger.warning("FIREBASE_SERVICE_ACCOUNT_JSON is not set. Using local storage.")
-        return None
-    try:
-        if not firebase_admin._apps:
-            service_account = json.loads(FIREBASE_SERVICE_ACCOUNT_JSON)
-            firebase_admin.initialize_app(credentials.Certificate(service_account))
-        return firestore.client()
-    except Exception as e:
-        logger.error("Firebase initialization failed: %s", e, exc_info=True)
-        return None
+AUTOPOST_FIREBASE_COLLECTION = os.getenv(
+    "AUTOPOST_FIREBASE_COLLECTION",
+    "rj_bot_config"
+).strip()
 
-FIRESTORE_DB = init_firebase()
+AUTOPOST_FIREBASE_DOCUMENT = os.getenv(
+    "AUTOPOST_FIREBASE_DOCUMENT",
+    "autopost"
+).strip()
 
-# =========================================================
-# AUTOPOST STORAGE
-# =========================================================
-def _local_load_autopost_data():
-    default = {"posts": [], "next_id": 1, "enabled": AUTOPOST_ENABLED, "groups": []}
-    try:
-        if not os.path.exists(AUTOPOST_FILE):
-            return default
-        with open(AUTOPOST_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        for k, v in default.items():
-            data.setdefault(k, v)
-        return data
-    except Exception as e:
-        logger.error("Could not load local autopost data: %s", e)
-        return default
+PORT = int(
+    os.getenv(
+        "PORT",
+        "10000"
+    )
+)
 
-def load_autopost_data():
-    local = _local_load_autopost_data()
-    if FIRESTORE_DB is None:
-        return local
-    try:
-        ref = FIRESTORE_DB.collection(FIREBASE_COLLECTION).document(FIREBASE_DOCUMENT)
-        snap = ref.get()
-        if snap.exists:
-            data = snap.to_dict() or {}
-            data.setdefault("posts", [])
-            data.setdefault("next_id", 1)
-            data.setdefault("enabled", AUTOPOST_ENABLED)
-            data.setdefault("groups", [])
-            return data
-        ref.set(local)
-        return local
-    except Exception as e:
-        logger.error("Could not load Firebase data: %s", e, exc_info=True)
-        return local
+RENDER_EXTERNAL_URL = os.getenv(
+    "RENDER_EXTERNAL_URL",
+    ""
+).strip()
 
-AUTOPOST_DATA = load_autopost_data()
+BD = ZoneInfo("Asia/Dhaka")
 
-def save_autopost_data():
-    data = {
-        "posts": AUTOPOST_DATA.get("posts", []) or [],
-        "next_id": int(AUTOPOST_DATA.get("next_id", 1)),
-        "enabled": bool(AUTOPOST_DATA.get("enabled", True)),
-        "groups": AUTOPOST_DATA.get("groups", []) or [],
-    }
-    try:
-        tmp = AUTOPOST_FILE + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, AUTOPOST_FILE)
-    except Exception as e:
-        logger.error("Could not save local backup: %s", e)
-    if FIRESTORE_DB is not None:
-        try:
-            FIRESTORE_DB.collection(FIREBASE_COLLECTION).document(FIREBASE_DOCUMENT).set(data)
-        except Exception as e:
-            logger.error("Could not save Firebase data: %s", e, exc_info=True)
+OWNER_USERNAME = "@RJteam1"
+CHANNEL_USERNAME = "@RJteam123890"
 
-def normalize_autopost_ids(save=True):
-    posts = AUTOPOST_DATA.get("posts", []) or []
-    changed = False
-    for i, post in enumerate(posts, 1):
-        if post.get("id") != i:
-            post["id"] = i
-            changed = True
-    expected = len(posts) + 1
-    if AUTOPOST_DATA.get("next_id") != expected:
-        AUTOPOST_DATA["next_id"] = expected
-        changed = True
-    if changed and save:
-        save_autopost_data()
 
-normalize_autopost_ids(save=False)
+# ============================================================
+# GEMINI MODELS
+# ============================================================
 
-def get_saved_groups():
-    cleaned, seen = [], set()
-    for g in AUTOPOST_DATA.get("groups", []) or []:
-        try:
-            cid = int(g.get("chat_id"))
-        except Exception:
-            continue
-        if cid in seen:
-            continue
-        seen.add(cid)
-        cleaned.append({
-            "chat_id": cid,
-            "title": str(g.get("title") or f"Group {cid}").strip(),
-            "username": str(g.get("username") or "").strip().lstrip("@"),
-            "active": bool(g.get("active", True)),
-        })
-    AUTOPOST_DATA["groups"] = cleaned
-    return cleaned
-
-def save_group(chat_id, title="", username=""):
-    try:
-        chat_id = int(chat_id)
-    except Exception:
-        return False
-    groups = get_saved_groups()
-    for g in groups:
-        if g["chat_id"] == chat_id:
-            if title: g["title"] = title
-            if username: g["username"] = username.lstrip("@")
-            g["active"] = True
-            save_autopost_data()
-            return False
-    groups.append({"chat_id": chat_id, "title": title or f"Group {chat_id}", "username": username.lstrip("@"), "active": True})
-    AUTOPOST_DATA["groups"] = groups
-    save_autopost_data()
-    return True
-
-def delete_group(chat_id):
-    try: target = int(chat_id)
-    except Exception: return False
-    old = get_saved_groups()
-    new = [g for g in old if g["chat_id"] != target]
-    if len(new) == len(old): return False
-    AUTOPOST_DATA["groups"] = new
-    save_autopost_data()
-    return True
-
-def active_group_ids():
-    return [g["chat_id"] for g in get_saved_groups() if g.get("active", True)]
-
-def group_id_from_index(value):
-    groups = get_saved_groups()
-    try:
-        i = int(value) - 1
-        return groups[i]["chat_id"] if 0 <= i < len(groups) else None
-    except Exception:
-        return None
-
-def target_chat_id():
-    if not TARGET_CHAT_ID: return None
-    try: return int(TARGET_CHAT_ID)
-    except ValueError: return TARGET_CHAT_ID
-
-def group_list_text():
-    groups = get_saved_groups()
-    if not groups:
-        return "👥 ACTIVE GROUPS\n\n📦 Total: 0\n\nগ্রুপে /addgroup লিখে আগে গ্রুপটি যোগ করুন।"
-    active = sum(1 for g in groups if g.get("active", True))
-    lines = ["👥 GROUPS", "", f"📦 Total: {len(groups)}", f"🟢 Active: {active}", ""]
-    for i, g in enumerate(groups, 1):
-        status = "🟢 Active" if g.get("active", True) else "⏸️ Paused"
-        uname = f"\n🔗 @{g['username']}" if g.get("username") else ""
-        lines.append(f"{i}️⃣ {g['title']}\n🆔 {g['chat_id']}{uname}\n{status}")
-        lines.append("")
-    return "\n".join(lines).strip()
-
-def parse_ampm_time(value):
-    value = value.strip().upper().replace(".", "")
-    for fmt in ("%I:%M %p", "%I %p", "%H:%M"):
-        try: return datetime.strptime(value, fmt).strftime("%H:%M")
-        except ValueError: pass
-    return None
-
-def display_time(hhmm):
-    try: return datetime.strptime(hhmm, "%H:%M").strftime("%I:%M %p").lstrip("0")
-    except Exception: return hhmm
-
-def add_autopost(time_hhmm, post_type, text="", photo_file_id=None, target_groups=None):
-    normalize_autopost_ids(save=False)
-    posts = AUTOPOST_DATA.setdefault("posts", [])
-    post_id = len(posts) + 1
-    posts.append({
-        "id": post_id, "time": time_hhmm, "type": post_type, "text": text or "",
-        "photo_file_id": photo_file_id, "last_sent_by_group": {},
-        "target_groups": target_groups or [],
-    })
-    AUTOPOST_DATA["next_id"] = len(posts) + 1
-    save_autopost_data()
-    return post_id
-
-def delete_autopost(post_id):
-    normalize_autopost_ids(save=False)
-    try: target = int(post_id)
-    except Exception: return False
-    posts = [p for p in AUTOPOST_DATA.get("posts", []) if int(p.get("id", -1)) != target]
-    if len(posts) == len(AUTOPOST_DATA.get("posts", [])): return False
-    for i, p in enumerate(posts, 1): p["id"] = i
-    AUTOPOST_DATA["posts"] = posts
-    AUTOPOST_DATA["next_id"] = len(posts) + 1
-    save_autopost_data()
-    return True
-
-def find_autopost(post_id):
-    for p in AUTOPOST_DATA.get("posts", []):
-        try:
-            if int(p.get("id", -1)) == int(post_id): return p
-        except Exception: pass
-    return None
-
-def autopost_detail_text(post):
-    ptype = "📷 Photo Post" if post.get("type") == "photo" else "📝 Text Post"
-    status = "🟢 ON" if AUTOPOST_DATA.get("enabled", True) else "🔴 OFF"
-    return (f"📋 Saved Auto Post\n\n🆔 ID: {post.get('id')}\n"
-            f"⏰ Time: {display_time(post.get('time',''))}\n📌 Type: {ptype}\n"
-            f"⚙️ Auto Post: {status}\n\n📝 Caption:\n{post.get('text') or '(কোনো caption নেই)'}")
-
-def autopost_detail_keyboard(pid):
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✏️ Edit", callback_data=f"autopost_edit:{pid}"),
-         InlineKeyboardButton("🗑️ Delete", callback_data=f"autopost_delete:{pid}")],
-        [InlineKeyboardButton("🔄 Refresh", callback_data=f"autopost_refresh:{pid}")],
-    ])
-
-# =========================================================
-# ADMIN / OWNER
-# =========================================================
-def is_admin(update: Update):
-    user = update.effective_user
-    if not user: return False
-    if ADMIN_USER_ID and str(user.id) == ADMIN_USER_ID: return True
-    return bool(user.username) and user.username.lstrip("@").lower() == ADMIN_USERNAME.lower()
-
-async def admin_only(update):
-    if is_admin(update): return True
-    if update.message: await update.message.reply_text("⛔ এই command শুধু Owner/Admin ব্যবহার করতে পারবে।")
-    return False
-
-# =========================================================
-# GEMINI
-# =========================================================
-client = genai.Client(api_key=GEMINI_API_KEY)
 GEMINI_MODELS = [
-    os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
-    "gemini-2.5-flash-lite",
-    "gemini-2.0-flash",
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-2.5-flash",
+    "gemini-3.5-flash-lite",
 ]
-GEMINI_SEMAPHORE = asyncio.Semaphore(3)
+
 
 SYSTEM_PROMPT = """
-তুমি একটি বন্ধুসুলভ Telegram AI Assistant। ব্যবহারকারী যে ভাষাতেই লিখুক, সাধারণ উত্তর বাংলায় দাও।
-প্রশ্নের সরাসরি উত্তর দাও, Banglish হলে বাংলা অক্ষরে উত্তর দেওয়ার চেষ্টা করো। মজার SMS হলে হালকা মজার,
-দুঃখের হলে সহানুভূতিশীল, romantic হলে কোমল, গুরুতর বিষয়ে মজা নয়। উত্তর Telegram-এর জন্য সংক্ষিপ্ত ও natural রাখো।
+You are RJ Team Bangladesh Premium AI Bot.
+
+Always answer naturally in Bangla unless the user explicitly
+asks for another language.
+
+Be friendly, helpful, concise and natural.
+
+For funny messages, be playful.
+For emotional messages, be empathetic.
+For translation requests, translate accurately.
+
+Never claim that an action was completed unless the bot
+actually performed that action.
 """
 
-def is_transient_error(s):
-    s = s.lower()
-    return any(x in s for x in ["429","500","502","503","504","resource_exhausted","unavailable","timeout","rate limit","too many requests"])
 
-async def generate_gemini(prompt, system_instruction=None):
-    async with GEMINI_SEMAPHORE:
-        for model in GEMINI_MODELS:
-            for attempt in range(2):
-                try:
-                    config = types.GenerateContentConfig(
-                        system_instruction=system_instruction,
-                        max_output_tokens=500,
-                        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-                    )
-                    response = await client.aio.models.generate_content(model=model, contents=prompt, config=config)
-                    answer = (response.text or "").strip()
-                    if answer: return answer
-                    break
-                except Exception as e:
-                    logger.error("Gemini error model=%s attempt=%s: %s", model, attempt + 1, e)
-                    if is_transient_error(str(e)) and attempt == 0:
-                        await asyncio.sleep(1.5 + random.random())
-                    else:
-                        break
-    return None
+ABOUT_TEXT = f"""
+🤖 RJ TEAM BANGLADESH - PREMIUM AI BOT
 
-async def ai_reply(text):
-    answer = await generate_gemini(text, SYSTEM_PROMPT)
-    return answer or "😅 এই মুহূর্তে AI সার্ভার ব্যস্ত আছে। একটু পরে আবার চেষ্টা করো। ❤️"
+✨ Gemini AI Assistant
+📢 Multi Group Auto Post
+🔥 Firebase Data Storage
+🌐 Translation Support
 
-async def translate_text(text):
-    prompt = f"""Translate the following text naturally. Detect the source language. If no target language is specified, translate into Bangla. Return only the translation.\n\nText:\n{text}"""
-    return await generate_gemini(prompt, "You are a professional translation assistant. Return only the requested translation.") or "❌ Translation সার্ভার এই মুহূর্তে ব্যস্ত।"
+👑 Owner: {OWNER_USERNAME}
+📢 Channel: {CHANNEL_USERNAME}
 
-# =========================================================
-# OWNER NATURAL COMMANDS
-# =========================================================
-async def owner_natural_command(update, context, text):
-    """@RJteam1-এর সাধারণ বাংলা/Banglish control message-কে নিরাপদ bot actions-এ map করে।"""
-    if not is_admin(update): return False
-    t = text.strip().lower()
-    if not t: return False
+🏴 RJ Team Bangladesh Hacker Community
+"""
 
-    # status/list/groups
-    if re.search(r"\b(status|স্ট্যাটাস|অবস্থা)\b", t):
-        posts = AUTOPOST_DATA.get("posts", []) or []
-        await update.message.reply_text(
-            f"📊 RJ BOT STATUS\n\n🤖 Auto Post: {'🟢 ON' if AUTOPOST_DATA.get('enabled',True) else '🔴 OFF'}\n"
-            f"👥 Groups: {len(get_saved_groups())}\n📋 Saved Posts: {len(posts)}"
-        ); return True
-    if re.search(r"\b(groups?|গ্রুপ|group list|গ্রুপ লিস্ট)\b", t) and not re.search(r"add|যোগ", t):
-        await update.message.reply_text(group_list_text()); return True
-    if re.search(r"\b(list|লিস্ট|saved posts?|সব পোস্ট|পোস্টগুলো)\b", t):
-        normalize_autopost_ids(save=True)
-        posts = AUTOPOST_DATA.get("posts", []) or []
-        if not posts:
-            await update.message.reply_text("📋 Saved Auto Posts\n\n📦 Total: 0"); return True
-        lines = [f"📋 SAVED POSTS — {len(posts)}টি", ""]
-        for p in posts:
-            lines.append(f"🆔 ID {p['id']} | ⏰ {display_time(p.get('time',''))}\n📝 {p.get('text') or '(খালি)'}")
-        await update.message.reply_text("\n\n".join(lines)[:4096]); return True
 
-    # on/off
-    if re.search(r"(auto\s*post|অটো\s*পোস্ট).*(off|বন্ধ|বন্ধ কর|disable|stop)", t):
-        AUTOPOST_DATA["enabled"] = False; save_autopost_data()
-        await update.message.reply_text("⛔ Auto Post OFF করা হয়েছে।"); return True
-    if re.search(r"(auto\s*post|অটো\s*পোস্ট).*(on|চালু|চালু কর|enable|start)", t):
-        AUTOPOST_DATA["enabled"] = True; save_autopost_data()
-        await update.message.reply_text("✅ Auto Post ON করা হয়েছে।"); return True
+# ============================================================
+# LOGGING
+# ============================================================
 
-    # delete post
-    m = re.search(r"(?:delete|ডিলিট|মুছ|মুছে).*?(?:id|আইডি)?\s*(\d+)", t)
-    if m:
-        pid = int(m.group(1))
-        ok = delete_autopost(pid)
-        await update.message.reply_text(f"{'🗑️ ID '+str(pid)+' delete হয়েছে।' if ok else '❌ ID '+str(pid)+' পাওয়া যায়নি।'}")
-        return True
+logging.basicConfig(
+    format=(
+        "%(asctime)s - "
+        "%(name)s - "
+        "%(levelname)s - "
+        "%(message)s"
+    ),
+    level=logging.INFO,
+)
 
-    # add text: "auto post 8:30 pm caption ..."
-    m = re.search(r"(?:auto\s*post|অটো\s*পোস্ট).*?(\d{1,2}(?::\d{2})?\s*(?:am|pm)|\d{1,2}:\d{2}).*?(?:দাও|যোগ কর|add)?\s*(.*)$", text, re.I)
-    if m and not re.search(r"off|বন্ধ|on|চালু|delete|ডিলিট|list|লিস্ট", t):
-        hhmm = parse_ampm_time(m.group(1))
-        caption = m.group(2).strip(" :-")
-        if hhmm and caption:
-            pid = add_autopost(hhmm, "text", caption)
-            await update.message.reply_text(f"✅ Auto Post যোগ হয়েছে।\n🆔 ID: {pid}\n⏰ {display_time(hhmm)}")
-            return True
+logger = logging.getLogger(__name__)
 
-    # broadcast
-    if re.search(r"^(broadcast|ব্রডকাস্ট|সব গ্রুপে পাঠাও|সব গ্রুপে দাও)", t):
-        msg = re.sub(r"^(broadcast|ব্রডকাস্ট|সব গ্রুপে পাঠাও|সব গ্রুপে দাও)\s*[:\-]?\s*", "", text, flags=re.I).strip()
-        if msg:
-            ok = fail = 0
-            for cid in active_group_ids():
-                try:
-                    await context.bot.send_message(cid, msg[:4096], disable_web_page_preview=True); ok += 1
-                except Exception: fail += 1
-            await update.message.reply_text(f"📢 Broadcast complete\n\n✅ Sent: {ok}\n❌ Failed: {fail}")
-            return True
 
-    # Explicitly reject unsupported owner commands instead of pretending they worked.
-    if re.search(r"(admin|owner|বস|bot|অটো|পোস্ট|গ্রুপ|broadcast|ব্রডকাস্ট)", t):
-        await update.message.reply_text("ℹ️ এই কথাটি বুঝেছি, কিন্তু এর জন্য নির্দিষ্ট safe action নেই। /help লিখে available command দেখুন।")
-        return True
-    return False
+# ============================================================
+# GLOBAL VARIABLES
+# ============================================================
 
-# =========================================================
-# COMMANDS
-# =========================================================
-async def start(update, context):
-    if not update.message: return
-    kb = [[InlineKeyboardButton("ℹ️ About", callback_data="about"), InlineKeyboardButton("🌐 Translate", callback_data="translate_help")],
-          [InlineKeyboardButton("📢 Channel", url="https://t.me/RJteam123890"), InlineKeyboardButton("👑 Owner", url="https://t.me/RJteam1")]]
-    await update.message.reply_text("👋 হ্যালো বন্ধু! ❤️\n\nআমি তোমার AI Assistant। 🤖\n\n💬 যেকোনো SMS পাঠাও।\n🌐 Translation-ও করা যাবে।\n\nনিচের Button ব্যবহার করতে পারো 👇", reply_markup=InlineKeyboardMarkup(kb))
+gemini_client = None
+firebase_db = None
 
-async def help_command(update, context):
-    if not update.message: return
-    await update.message.reply_text(
-        "🤖 RJ Team Bot Help\n\n💬 যেকোনো SMS পাঠাও।\n🌐 /translate Hello\nℹ️ /about\n\n"
-        "👑 OWNER NATURAL CONTROL\nAuto Post on/off, list, delete ID, status, groups, broadcast—@RJteam1 সাধারণ ভাষায় বললেও bot action বুঝবে।\n\n"
-        "👥 ADMIN\n/addgroup\n/groups\n/delgroup 1\n/pausegroup 1\n/renamegroup 1 নতুন নাম\n/broadcast মেসেজ\n/status\n\n"
-        "📅 AUTO POST\n/autopost on/off/list\n/autopost add 8:30 PM পোস্ট\n/autopost addphoto 8:30 PM Caption (photo reply)\n/autopost delete 1\n/list\n/delete 1\n/clear\n/on\n/off\n/test"
+user_last_ai_reply = {}
+
+autopost_data = {
+    "enabled": AUTOPOST_ENABLED,
+    "groups": {},
+    "posts": [],
+}
+
+
+# ============================================================
+# FIREBASE
+# ============================================================
+
+def init_firebase():
+
+    global firebase_db
+
+    if not FIREBASE_SERVICE_ACCOUNT_JSON:
+        logger.warning(
+            "FIREBASE_SERVICE_ACCOUNT_JSON not found. "
+            "Using local storage."
+        )
+        return
+
+    try:
+
+        service_account = json.loads(
+            FIREBASE_SERVICE_ACCOUNT_JSON
+        )
+
+        if not firebase_admin._apps:
+
+            cred = credentials.Certificate(
+                service_account
+            )
+
+            firebase_admin.initialize_app(
+                cred
+            )
+
+        firebase_db = firestore.client()
+
+        logger.info(
+            "Firebase connected successfully."
+        )
+
+    except Exception as e:
+
+        firebase_db = None
+
+        logger.exception(
+            "Firebase initialization failed: %s",
+            e
+        )
+
+
+def firebase_ref():
+
+    if firebase_db is None:
+        return None
+
+    return (
+        firebase_db
+        .collection(
+            AUTOPOST_FIREBASE_COLLECTION
+        )
+        .document(
+            AUTOPOST_FIREBASE_DOCUMENT
+        )
     )
 
-async def about_command(update, context):
-    kb = [[InlineKeyboardButton("👑 Owner", url="https://t.me/RJteam1"), InlineKeyboardButton("📢 Channel", url="https://t.me/RJteam123890")]]
-    await update.message.reply_text("🤖 About AI Assistant\n\nআমি RJ Team Bangladesh-এর AI Assistant। ❤️\n\n👑 Owner: @RJteam1\n📢 Channel: @RJteam123890", reply_markup=InlineKeyboardMarkup(kb), disable_web_page_preview=True)
 
-async def translate_command(update, context):
-    if not context.args:
-        await update.message.reply_text("🌐 /translate Hello, how are you?"); return
-    await update.message.chat.send_action("typing")
-    await update.message.reply_text("🌐 Translation:\n\n" + await translate_text(" ".join(context.args)), disable_web_page_preview=True)
+def firebase_load():
 
-async def addgroup_command(update, context):
-    if not await admin_only(update): return
-    chat = update.effective_chat
-    if chat.type not in ("group", "supergroup"):
-        await update.message.reply_text("❌ Group-এর ভিতর থেকে /addgroup দিন।"); return
-    save_group(chat.id, chat.title or "Unnamed Group", getattr(chat, "username", "") or "")
-    await update.message.reply_text("✅ Group active list-এ আছে।\n\n" + group_list_text())
+    ref = firebase_ref()
 
-async def groups_command(update, context):
-    if await admin_only(update): await update.message.reply_text(group_list_text())
+    if ref is None:
+        return None
 
-async def delgroup_command(update, context):
-    if not await admin_only(update): return
-    if not context.args: await update.message.reply_text("ব্যবহার: /delgroup 1"); return
-    raw = context.args[0]; cid = group_id_from_index(raw) if raw.isdigit() and not raw.startswith("-") else None
-    if cid is None:
-        try: cid = int(raw)
-        except Exception: cid = None
-    await update.message.reply_text("🗑️ Group delete হয়েছে।\n\n" + group_list_text() if cid and delete_group(cid) else "❌ Group পাওয়া যায়নি।")
+    try:
 
-async def status_command(update, context):
-    if not await admin_only(update): return
-    await update.message.reply_text(f"📊 RJ BOT STATUS\n\n🤖 Auto Post: {'🟢 ON' if AUTOPOST_DATA.get('enabled',True) else '🔴 OFF'}\n👥 Groups: {len(get_saved_groups())}\n📋 Posts: {len(AUTOPOST_DATA.get('posts',[]) or [])}\n💾 Storage: Firebase + local backup")
+        snap = ref.get()
 
-async def pausegroup_command(update, context):
-    if not await admin_only(update): return
-    if not context.args: await update.message.reply_text("ব্যবহার: /pausegroup 1"); return
-    raw=context.args[0]; cid=group_id_from_index(raw) if raw.isdigit() and not raw.startswith("-") else None
-    if cid is None:
-        try: cid=int(raw)
-        except Exception: cid=None
-    for g in get_saved_groups():
-        if g["chat_id"] == cid:
-            g["active"] = not g.get("active",True); save_autopost_data()
-            await update.message.reply_text(f"✅ {g['title']} এখন {'🟢 Active' if g['active'] else '⏸️ Paused'}।"); return
-    await update.message.reply_text("❌ Group পাওয়া যায়নি।")
+        if not snap.exists:
+            return None
 
-async def renamegroup_command(update, context):
-    if not await admin_only(update): return
-    if len(context.args)<2: await update.message.reply_text("ব্যবহার: /renamegroup 1 নতুন নাম"); return
-    raw=context.args[0]; cid=group_id_from_index(raw) if raw.isdigit() and not raw.startswith("-") else None
-    if cid is None:
-        try: cid=int(raw)
-        except Exception: cid=None
-    for g in get_saved_groups():
-        if g["chat_id"]==cid:
-            g["title"]=" ".join(context.args[1:]); save_autopost_data(); await update.message.reply_text("✅ নাম update হয়েছে।"); return
-    await update.message.reply_text("❌ Group পাওয়া যায়নি।")
+        return snap.to_dict()
 
-async def broadcast_command(update, context):
-    if not await admin_only(update): return
-    text=" ".join(context.args).strip()
-    if not text and update.message.reply_to_message:
-        text=update.message.reply_to_message.text or update.message.reply_to_message.caption or ""
-    if not text: await update.message.reply_text("ব্যবহার: /broadcast আপনার মেসেজ"); return
-    ok=fail=0
-    for cid in active_group_ids():
-        try: await context.bot.send_message(cid,text[:4096],disable_web_page_preview=True); ok+=1
-        except Exception: fail+=1
-    await update.message.reply_text(f"📢 Broadcast complete\n\n✅ Sent: {ok}\n❌ Failed: {fail}")
+    except Exception as e:
 
-async def autopost_command(update, context):
-    if not await admin_only(update): return
-    args=context.args
-    if not args:
-        await update.message.reply_text("/autopost on | off | list | add 8:30 PM পোস্ট | addphoto 8:30 PM Caption | delete 1"); return
-    action=args[0].lower()
-    if action in ("on","off"):
-        AUTOPOST_DATA["enabled"] = action=="on"; save_autopost_data(); await update.message.reply_text(f"{'✅ Auto Post ON' if action=='on' else '⛔ Auto Post OFF'}"); return
-    if action=="list": await autopost_list_command(update,context); return
-    if action=="delete" and len(args)>1:
-        pid=int(args[1]) if args[1].isdigit() else -1; await update.message.reply_text("🗑️ Deleted" if delete_autopost(pid) else "❌ ID পাওয়া যায়নি।"); return
-    if action=="add" and len(args)>=3:
-        tc=3 if len(args)>2 and args[2].upper() in ("AM","PM") else 2
-        hh=parse_ampm_time(" ".join(args[1:tc])); text=" ".join(args[tc:]).strip()
-        if hh and text:
-            pid=add_autopost(hh,"text",text); await update.message.reply_text(f"✅ Auto Post যোগ হয়েছে।\n🆔 ID: {pid}\n⏰ {display_time(hh)}"); return
-    if action=="addphoto" and len(args)>=2:
-        tc=3 if len(args)>2 and args[2].upper() in ("AM","PM") else 2
-        hh=parse_ampm_time(" ".join(args[1:tc])); r=update.message.reply_to_message
-        if hh and r and r.photo:
-            caption=" ".join(args[tc:]).strip() or r.caption or ""
-            pid=add_autopost(hh,"photo",caption,r.photo[-1].file_id); await update.message.reply_text(f"✅ Photo Auto Post যোগ হয়েছে।\n🆔 ID: {pid}\n⏰ {display_time(hh)}"); return
-    await update.message.reply_text("❌ Format ভুল। /help দেখুন।")
+        logger.error(
+            "Firebase load error: %s",
+            e
+        )
 
-async def autopost_list_command(update, context):
-    if not await admin_only(update): return
-    normalize_autopost_ids(save=True); posts=AUTOPOST_DATA.get("posts",[]) or []
-    if not posts: await update.message.reply_text("📋 ALL SAVED AUTO POSTS\n\n📦 Total: 0"); return
-    for p in posts:
-        await update.message.reply_text(autopost_detail_text(p), reply_markup=autopost_detail_keyboard(p["id"]), disable_web_page_preview=True)
+        return None
 
-async def delete_command(update, context):
-    if await admin_only(update):
-        if context.args and context.args[0].isdigit(): await update.message.reply_text("🗑️ Deleted" if delete_autopost(int(context.args[0])) else "❌ ID পাওয়া যায়নি।")
-        else: await update.message.reply_text("ব্যবহার: /delete ID")
 
-async def clear_command(update, context):
-    if await admin_only(update):
-        AUTOPOST_DATA["posts"]=[]; AUTOPOST_DATA["next_id"]=1; save_autopost_data(); await update.message.reply_text("🗑️ সব Auto Post delete হয়েছে।")
+def firebase_save(data):
 
-async def on_command(update, context):
-    if await admin_only(update): AUTOPOST_DATA["enabled"]=True; save_autopost_data(); await update.message.reply_text("✅ Auto Post ON 🟢")
-async def off_command(update, context):
-    if await admin_only(update): AUTOPOST_DATA["enabled"]=False; save_autopost_data(); await update.message.reply_text("⛔ Auto Post OFF 🔴")
-async def test_command(update, context):
-    if not await admin_only(update): return
-    cid=(active_group_ids() or [target_chat_id()])[0]
-    if not cid: await update.message.reply_text("❌ কোনো active group নেই।"); return
-    try: await context.bot.send_message(cid,"🧪 RJ Team Auto Post Test সফল হয়েছে।"); await update.message.reply_text("✅ Test sent.")
-    except Exception as e: await update.message.reply_text(f"❌ Test failed: {e}")
-async def cancel_command(update, context):
-    context.user_data.pop("autopost_edit_id",None); await update.message.reply_text("❌ Edit বাতিল করা হয়েছে।")
+    ref = firebase_ref()
 
-# =========================================================
-# CALLBACKS
-# =========================================================
-async def autopost_callback_handler(update, context):
-    q=update.callback_query
-    if not q: return
-    if not is_admin(update): await q.answer("⛔ শুধু Owner/Admin",show_alert=True); return
-    data=q.data or ""; await q.answer()
-    if data=="autopost_list":
-        await q.edit_message_text("📋 ALL SAVED AUTO POSTS\n\n" + "\n\n".join(autopost_detail_text(p) for p in AUTOPOST_DATA.get("posts",[]))[:4096]); return
-    try: action,pid=data.split(":",1); pid=int(pid)
-    except Exception: return
-    p=find_autopost(pid)
-    if action=="autopost_open":
-        if p: await q.message.reply_text(autopost_detail_text(p),reply_markup=autopost_detail_keyboard(pid))
-        return
-    if action=="autopost_refresh":
-        if p: await q.edit_message_text(autopost_detail_text(p),reply_markup=autopost_detail_keyboard(pid))
-        return
-    if action=="autopost_edit":
-        if p:
-            context.user_data["autopost_edit_id"]=pid
-            await q.message.reply_text(f"✏️ ID {pid} Edit Mode\n\nনতুন format: 10:30 PM|নতুন caption\n/cancel দিয়ে বাতিল করুন।")
-        return
-    if action=="autopost_delete":
-        await q.edit_message_text(f"⚠️ ID {pid} delete করবেন?",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Yes",callback_data=f"autopost_delete_yes:{pid}"),InlineKeyboardButton("❌ No",callback_data=f"autopost_delete_no:{pid}")]])); return
-    if action=="autopost_delete_yes":
-        await q.edit_message_text("🗑️ Deleted" if delete_autopost(pid) else "❌ ID পাওয়া যায়নি।"); return
-    if action=="autopost_delete_no":
-        if p: await q.edit_message_text(autopost_detail_text(p),reply_markup=autopost_detail_keyboard(pid))
+    if ref is None:
+        return False
 
-async def button_handler(update, context):
-    q=update.callback_query
-    await q.answer()
-    if q.data=="about": await about_command(update,context)
-    elif q.data=="translate_help": await q.message.reply_text("🌐 /translate Hello, how are you?\n\nডিফল্টভাবে বাংলা translation দেওয়া হবে। ❤️")
-    elif q.data=="translate_last":
-        text=context.user_data.get("last_ai_reply")
-        if text: await q.message.reply_text("🌐 Translation:\n\n"+await translate_text(text))
-        else: await q.message.reply_text("❌ আগের reply পাওয়া যাচ্ছে না।")
+    try:
 
-# =========================================================
-# MESSAGE HANDLER
-# =========================================================
-async def edit_mode_message(update, context):
-    pid=context.user_data.get("autopost_edit_id")
-    raw=update.message.text.strip()
-    if raw.lower()=="/cancel": context.user_data.pop("autopost_edit_id",None); await update.message.reply_text("❌ Edit বাতিল।"); return True
-    if "|" not in raw: await update.message.reply_text("Format: 10:30 PM|নতুন caption"); return True
-    ts,caption=raw.split("|",1); hh=parse_ampm_time(ts)
-    p=find_autopost(pid)
-    if not hh or not caption.strip() or not p: await update.message.reply_text("❌ Format/time/ID ঠিক নয়।"); return True
-    p["time"]=hh; p["text"]=caption.strip(); p["last_sent_by_group"]={}; save_autopost_data(); context.user_data.pop("autopost_edit_id",None)
-    await update.message.reply_text(f"✅ ID {pid} update হয়েছে।\n⏰ {display_time(hh)}\n📝 {caption.strip()}"); return True
+        ref.set(data)
 
-async def handle_message(update, context):
-    if not update.message or not update.message.text: return
-    text=update.message.text.strip()
-    if not text: return
-    if is_admin(update) and context.user_data.get("autopost_edit_id") is not None:
-        if await edit_mode_message(update,context): return
-    # Owner's natural language controls are checked before AI.
-    if is_admin(update) and await owner_natural_command(update,context,text): return
-    await update.message.chat.send_action("typing")
-    answer=await ai_reply(text)
-    context.user_data["last_ai_reply"]=answer
-    await update.message.reply_text(answer,reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🌐 Translate",callback_data="translate_last")]]),disable_web_page_preview=True)
+        return True
 
-# =========================================================
-# AUTO POST WORKER
-# =========================================================
-async def auto_post_worker(application):
-    logger.info("Automatic multi-group post system started.")
-    while True:
-        try:
-            if AUTOPOST_DATA.get("enabled",True):
-                now=datetime.now(BD_TZ); hh=now.strftime("%H:%M"); today=now.strftime("%Y-%m-%d")
-                groups=active_group_ids()
-                if not groups and TARGET_CHAT_ID:
-                    cid=target_chat_id()
-                    if cid: save_group(cid,"Legacy Target Group"); groups=active_group_ids()
-                changed=False
-                for p in AUTOPOST_DATA.get("posts",[]):
-                    if p.get("time")!=hh: continue
-                    targets=p.get("target_groups") or groups
-                    sent=p.setdefault("last_sent_by_group",{})
-                    for cid in targets:
-                        key=str(cid)
-                        if sent.get(key)==today: continue
-                        try:
-                            if p.get("type")=="photo" and p.get("photo_file_id"):
-                                await application.bot.send_photo(cid,p["photo_file_id"],caption=(p.get("text") or "")[:1024] or None)
-                            else:
-                                await application.bot.send_message(cid,(p.get("text") or "")[:4096],disable_web_page_preview=True)
-                            sent[key]=today; changed=True
-                        except Exception as e: logger.error("Auto post failed id=%s group=%s: %s",p.get("id"),cid,e)
-                if changed: save_autopost_data()
-            await asyncio.sleep(20)
-        except asyncio.CancelledError: raise
-        except Exception as e: logger.error("Auto worker error: %s",e,exc_info=True); await asyncio.sleep(20)
+    except Exception as e:
 
-async def post_init(application): application.bot_data["autopost_task"]=asyncio.create_task(auto_post_worker(application))
-async def post_shutdown(application):
-    task=application.bot_data.get("autopost_task")
-    if task:
-        task.cancel()
-        try: await task
-        except asyncio.CancelledError: pass
+        logger.error(
+            "Firebase save error: %s",
+            e
+        )
 
-async def error_handler(update, context): logger.error("Telegram error: %s",context.error,exc_info=True)
+        return False
 
-# =========================================================
-# MAIN
-# =========================================================
-def main():
-    app=(Application.builder().token(BOT_TOKEN).post_init(post_init).post_shutdown(post_shutdown).build())
-    app.add_handler(CommandHandler("start",start)); app.add_handler(CommandHandler("help",help_command)); app.add_handler(CommandHandler("about",about_command)); app.add_handler(CommandHandler("translate",translate_command))
-    app.add_handler(CommandHandler("autopost",autopost_command)); app.add_handler(CommandHandler("addgroup",addgroup_command)); app.add_handler(CommandHandler("groups",groups_command)); app.add_handler(CommandHandler("delgroup",delgroup_command)); app.add_handler(CommandHandler("status",status_command)); app.add_handler(CommandHandler("pausegroup",pausegroup_command)); app.add_handler(CommandHandler("renamegroup",renamegroup_command)); app.add_handler(CommandHandler("broadcast",broadcast_command))
-    app.add_handler(CommandHandler("list",autopost_list_command)); app.add_handler(CommandHandler("delete",delete_command)); app.add_handler(CommandHandler("clear",clear_command)); app.add_handler(CommandHandler("on",on_command)); app.add_handler(CommandHandler("off",off_command)); app.add_handler(CommandHandler("test",test_command)); app.add_handler(CommandHandler("cancel",cancel_command))
-    app.add_handler(CallbackQueryHandler(autopost_callback_handler,pattern=r"^(autopost_list|autopost_open:\d+|autopost_(edit|delete|refresh|delete_yes|delete_no):\d+)$"))
-    app.add_handler(CallbackQueryHandler(button_handler,pattern=r"^(about|translate_help|translate_last)$"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,handle_message))
-    app.add_error_handler(error_handler)
-    port=int(os.getenv("PORT","10000")); render_url=os.getenv("RENDER_EXTERNAL_URL")
-    if render_url:
-        app.run_webhook(listen="0.0.0.0",port=port,url_path="telegram/"+BOT_TOKEN,webhook_url=render_url.rstrip("/")+"/telegram/"+BOT_TOKEN,drop_pending_updates=True,allowed_updates=Update.ALL_TYPES)
+
+# ============================================================
+# LOCAL STORAGE
+# ============================================================
+
+def save_local():
+
+    try:
+
+        with open(
+            AUTOPOST_FILE,
+            "w",
+            encoding="utf-8"
+        ) as f:
+
+            json.dump(
+                autopost_data,
+                f,
+                ensure_ascii=False,
+                indent=2
+            )
+
+    except Exception as e:
+
+        logger.error(
+            "Local save error: %s",
+            e
+        )
+
+
+def save_autopost_data():
+
+    save_local()
+
+    firebase_save(
+        autopost_data
+    )
+
+
+def load_local():
+
+    if not os.path.exists(
+        AUTOPOST_FILE
+    ):
+        return False
+
+    try:
+
+        with open(
+            AUTOPOST_FILE,
+            "r",
+            encoding="utf-8"
+        ) as f:
+
+            data = json.load(f)
+
+        if isinstance(data, dict):
+
+            autopost_data[
+                "enabled"
+            ] = data.get(
+                "enabled",
+                AUTOPOST_ENABLED
+            )
+
+            autopost_data[
+                "groups"
+            ] = data.get(
+                "groups",
+                {}
+            )
+
+            autopost_data[
+                "posts"
+            ] = data.get(
+                "posts",
+                []
+            )
+
+            return True
+
+    except Exception as e:
+
+        logger.error(
+            "Local load error: %s",
+            e
+        )
+
+    return False
+
+
+def normalize_post_ids(
+    save=True
+):
+
+    for index, post in enumerate(
+        autopost_data["posts"],
+        start=1
+    ):
+
+        post["id"] = index
+
+    if save:
+        save_autopost_data()
+
+
+def load_autopost_data():
+
+    remote = firebase_load()
+
+    if remote:
+
+        autopost_data[
+            "enabled"
+        ] = remote.get(
+            "enabled",
+            AUTOPOST_ENABLED
+        )
+
+        autopost_data[
+            "groups"
+        ] = remote.get(
+            "groups",
+            {}
+        )
+
+        autopost_data[
+            "posts"
+        ] = remote.get(
+            "posts",
+            []
+        )
+
+        save_local()
+
     else:
-        app.run_polling(drop_pending_updates=True,allowed_updates=Update.ALL_TYPES)
+
+        load_local()
+
+        if firebase_db is not None:
+            firebase_save(
+                autopost_data
+            )
+
+    normalize_post_ids(
+        save=False
+    )
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+def now_bd():
+
+    return datetime.now(BD)
+
+
+def is_admin(update: Update):
+
+    user = update.effective_user
+
+    if not user:
+        return False
+
+    if (
+        ADMIN_USER_ID
+        and str(user.id)
+        == ADMIN_USER_ID
+    ):
+        return True
+
+    username = (
+        user.username
+        or ""
+    ).lstrip("@").lower()
+
+    return (
+        username
+        == ADMIN_USERNAME.lower()
+    )
+
+
+def owner_reply(text):
+
+    text = text.strip()
+
+    if text.startswith(
+        "জি বস"
+    ):
+        return text
+
+    return (
+        "জি বস, "
+        + text
+    )
+
+
+def parse_chat_id(value):
+
+    try:
+        return int(
+            str(value).strip()
+        )
+    except Exception:
+        return str(value).strip()
+
+
+def parse_time(value):
+
+    value = value.strip().upper()
+
+    match = re.fullmatch(
+        r"(\d{1,2})"
+        r"(?::(\d{2}))?"
+        r"\s*(AM|PM)?",
+        value
+    )
+
+    if not match:
+        return None
+
+    hour = int(
+        match.group(1)
+    )
+
+    minute = int(
+        match.group(2)
+        or "00"
+    )
+
+    ampm = match.group(3)
+
+    if minute > 59:
+        return None
+
+    if ampm:
+
+        if hour < 1 or hour > 12:
+            return None
+
+        if ampm == "AM":
+
+            if hour == 12:
+                hour = 0
+
+        else:
+
+            if hour != 12:
+                hour += 12
+
+    elif hour > 23:
+
+        return None
+
+    return (
+        f"{hour:02d}:"
+        f"{minute:02d}"
+    )
+
+
+def extract_time_and_text(
+    raw
+):
+
+    patterns = [
+
+        r"^\s*"
+        r"(\d{1,2}"
+        r"(?::\d{2})?"
+        r"\s*(?:AM|PM))"
+        r"\s+(.+)$",
+
+        r"^\s*"
+        r"(\d{1,2}:\d{2})"
+        r"\s+(.+)$",
+    ]
+
+    for pattern in patterns:
+
+        match = re.match(
+            pattern,
+            raw,
+            re.I | re.S
+        )
+
+        if match:
+
+            parsed = parse_time(
+                match.group(1)
+            )
+
+            if parsed:
+
+                return (
+                    parsed,
+                    match.group(2).strip()
+                )
+
+    return None, None
+
+
+def active_groups():
+
+    return {
+        key: value
+        for key, value
+        in autopost_data[
+            "groups"
+        ].items()
+        if value.get(
+            "active",
+            True
+        )
+    }
+
+
+# ============================================================
+# GEMINI
+# ============================================================
+
+def init_gemini():
+
+    global gemini_client
+
+    if not GEMINI_API_KEY:
+
+        logger.warning(
+            "GEMINI_API_KEY missing."
+        )
+
+        return
+
+    try:
+
+        gemini_client = genai.Client(
+            api_key=GEMINI_API_KEY
+        )
+
+        logger.info(
+            "Gemini initialized."
+        )
+
+    except Exception as e:
+
+        logger.exception(
+            "Gemini initialization failed: %s",
+            e
+        )
+
+
+async def ask_gemini(
+    prompt
+):
+
+    if gemini_client is None:
+
+        return (
+            "দুঃখিত, Gemini API "
+            "configure করা নেই।"
+        )
+
+    last_error = None
+
+    for model in GEMINI_MODELS:
+
+        try:
+
+            response = await asyncio.to_thread(
+
+                gemini_client
+                .models
+                .generate_content,
+
+                model=model,
+
+                contents=[
+                    types.Content(
+                        role="user",
+                        parts=[
+                            types.Part.from_text(
+                                text=(
+                                    SYSTEM_PROMPT
+                                    + "\n\nUser:\n"
+                                    + prompt
+                                )
+                            )
+                        ],
+                    )
+                ],
+            )
+
+            answer = getattr(
+                response,
+                "text",
+                None
+            )
+
+            if answer:
+
+                return answer.strip()
+
+        except Exception as e:
+
+            last_error = e
+
+            logger.warning(
+                "Gemini model %s failed: %s",
+                model,
+                e
+            )
+
+            await asyncio.sleep(
+                0.5
+            )
+
+    logger.error(
+        "All Gemini models failed: %s",
+        last_error
+    )
+
+    return (
+        "দুঃখিত, এই মুহূর্তে "
+        "AI response পাওয়া যাচ্ছে না। "
+        "একটু পরে চেষ্টা করুন।"
+    )
+
+
+# ============================================================
+# AUTO POST
+# ============================================================
+
+def add_group(
+    chat_id,
+    title=None
+):
+
+    key = str(chat_id)
+
+    if key in autopost_data[
+        "groups"
+    ]:
+
+        return False
+
+    autopost_data[
+        "groups"
+    ][key] = {
+
+        "chat_id": chat_id,
+
+        "title": (
+            title
+            or key
+        ),
+
+        "active": True,
+    }
+
+    save_autopost_data()
+
+    return True
+
+
+def delete_group(
+    chat_id
+):
+
+    key = str(chat_id)
+
+    if key not in autopost_data[
+        "groups"
+    ]:
+
+        return False
+
+    del autopost_data[
+        "groups"
+    ][key]
+
+    save_autopost_data()
+
+    return True
+
+
+def add_post(
+    post_time,
+    text="",
+    photo_id=None,
+    group_ids=None
+):
+
+    if group_ids is None:
+
+        group_ids = list(
+            autopost_data[
+                "groups"
+            ].keys()
+        )
+
+    post = {
+
+        "id": (
+            len(
+                autopost_data[
+                    "posts"
+                ]
+            )
+            + 1
+        ),
+
+        "post_time": post_time,
+
+        "text": text,
+
+        "caption": text,
+
+        "photo_id": photo_id,
+
+        "group_ids": [
+            str(x)
+            for x in group_ids
+        ],
+
+        "enabled": True,
+    }
+
+    autopost_data[
+        "posts"
+    ].append(post)
+
+    normalize_post_ids(
+        save=False
+    )
+
+    save_autopost_data()
+
+    return post
+
+
+def delete_post(
+    post_id
+):
+
+    try:
+
+        post_id = int(
+            post_id
+        )
+
+    except Exception:
+
+        return False
+
+    before = len(
+        autopost_data[
+            "posts"
+        ]
+    )
+
+    autopost_data[
+        "posts"
+    ] = [
+
+        post
+        for post
+        in autopost_data[
+            "posts"
+        ]
+
+        if int(
+            post.get(
+                "id",
+                0
+            )
+        ) != post_id
+    ]
+
+    changed = (
+        len(
+            autopost_data[
+                "posts"
+            ]
+        )
+        != before
+    )
+
+    if changed:
+
+        normalize_post_ids(
+            save=False
+        )
+
+        save_autopost_data()
+
+    return changed
+
+
+def clear_posts():
+
+    autopost_data[
+        "posts"
+    ] = []
+
+    save_autopost_data()
+
+
+def format_post(
+    post
+):
+
+    groups = (
+        post.get(
+            "group_ids"
+        )
+        or list(
+            autopost_data[
+                "groups"
+            ].keys()
+        )
+    )
+
+    status = (
+        "ON"
+        if post.get(
+            "enabled",
+            True
+        )
+        else "OFF"
+    )
+
+    text = (
+        post.get(
+            "text"
+        )
+        or post.get(
+            "caption"
+        )
+        or ""
+    )
+
+    if len(text) > 120:
+
+        text = (
+            text[:120]
+            + "..."
+        )
+
+    return (
+        f"🆔 ID: {post.get('id')}\n"
+        f"⏰ Time: {post.get('post_time')}\n"
+        f"📌 Status: {status}\n"
+        f"👥 Groups: {len(groups)}\n"
+        f"📝 {text or '[Photo Post]'}"
+    )
+
+
+def list_posts_text():
+
+    posts = autopost_data[
+        "posts"
+    ]
+
+    if not posts:
+
+        return (
+            "📭 কোনো Auto Post নেই।"
+        )
+
+    lines = [
+
+        "📢 AUTO POST LIST",
+
+        (
+            "Status: "
+            + (
+                "ON"
+                if autopost_data[
+                    "enabled"
+                ]
+                else "OFF"
+            )
+        ),
+
+        "",
+    ]
+
+    for post in posts:
+
+        lines.append(
+            format_post(
+                post
+            )
+        )
+
+        lines.append("")
+
+    return "\n".join(
+        lines
+    )
+
+
+# ============================================================
+# PUBLIC COMMANDS
+# ============================================================
+
+async def start_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    keyboard = [
+
+        [
+
+            InlineKeyboardButton(
+                "ℹ️ About",
+                callback_data="about"
+            ),
+
+            InlineKeyboardButton(
+                "🌐 Translate",
+                callback_data="translate"
+            ),
+        ],
+
+        [
+
+            InlineKeyboardButton(
+                "📢 Channel",
+                url=(
+                    "https://t.me/"
+                    + CHANNEL_USERNAME
+                    .lstrip("@")
+                )
+            ),
+
+            InlineKeyboardButton(
+                "👑 Owner",
+                url=(
+                    "https://t.me/"
+                    + ADMIN_USERNAME
+                )
+            ),
+        ],
+    ]
+
+    await update.message.reply_text(
+
+        "🤖 RJ TEAM BANGLADESH "
+        "PREMIUM AI BOT\n\n"
+        "আপনার মেসেজ পাঠান, "
+        "আমি AI দিয়ে উত্তর দেব।",
+
+        reply_markup=(
+            InlineKeyboardMarkup(
+                keyboard
+            )
+        )
+    )
+
+
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    await update.message.reply_text(
+
+        "📚 HELP\n\n"
+
+        "/start - Start\n"
+        "/help - Help\n"
+        "/about - About\n"
+        "/translate <text> - Translate\n\n"
+
+        "👑 OWNER COMMANDS\n"
+
+        "/autopost\n"
+        "/addgroup\n"
+        "/groups\n"
+        "/delgroup <chat_id>\n"
+        "/status\n"
+        "/pausegroup <chat_id>\n"
+        "/renamegroup <chat_id> <name>\n"
+        "/broadcast <text>\n"
+        "/list\n"
+        "/delete <id>\n"
+        "/clear\n"
+        "/on\n"
+        "/off\n"
+        "/test\n"
+        "/cancel\n\n"
+
+        "Owner চাইলে SMS দিয়েও "
+        "safe bot controls ব্যবহার করতে পারবেন।"
+    )
+
+
+async def about_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    await update.message.reply_text(
+        ABOUT_TEXT
+    )
+
+
+async def translate_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    text = " ".join(
+        context.args
+    ).strip()
+
+    if not text:
+
+        await update.message.reply_text(
+            "ব্যবহার:\n"
+            "/translate Hello, how are you?"
+        )
+
+        return
+
+    result = await ask_gemini(
+
+        "Translate the following text "
+        "into natural Bangla. "
+        "Return only the translation:\n\n"
+        + text
+    )
+
+    await update.message.reply_text(
+        result
+    )
+
+
+async def translate_last_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    user_id = update.effective_user.id
+
+    last = user_last_ai_reply.get(
+        user_id
+    )
+
+    if not last:
+
+        await update.message.reply_text(
+            "আগের কোনো AI reply পাওয়া যায়নি।"
+        )
+
+        return
+
+    result = await ask_gemini(
+
+        "Translate the following text "
+        "into natural Bangla. "
+        "Return only the translation:\n\n"
+        + last
+    )
+
+    await update.message.reply_text(
+        result
+    )
+
+
+# ============================================================
+# OWNER COMMANDS
+# ============================================================
+
+async def autopost_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not is_admin(update):
+        return
+
+    await update.message.reply_text(
+
+        owner_reply(
+
+            "Auto Post বর্তমানে "
+            + (
+                "ON"
+                if autopost_data[
+                    "enabled"
+                ]
+                else "OFF"
+            )
+            + ".\n\n"
+            + list_posts_text()
+        )
+    )
+
+
+async def addgroup_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not is_admin(update):
+        return
+
+    chat = update.effective_chat
+
+    if not chat:
+        return
+
+    title = (
+        chat.title
+        or chat.username
+        or str(chat.id)
+    )
+
+    if add_group(
+        chat.id,
+        title
+    ):
+
+        msg = (
+            "এই group Auto Post-এর জন্য "
+            "যোগ করা হয়েছে: "
+            + title
+        )
+
+    else:
+
+        msg = (
+            "এই group আগে থেকেই "
+            "Auto Post list-এ আছে।"
+        )
+
+    await update.message.reply_text(
+        owner_reply(msg)
+    )
+
+
+async def groups_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not is_admin(update):
+        return
+
+    groups = autopost_data[
+        "groups"
+    ]
+
+    if not groups:
+
+        await update.message.reply_text(
+            owner_reply(
+                "কোনো group নেই।"
+            )
+        )
+
+        return
+
+    lines = [
+        "👥 GROUP LIST",
+        ""
+    ]
+
+    for key, group in groups.items():
+
+        status = (
+            "ON"
+            if group.get(
+                "active",
+                True
+            )
+            else "PAUSED"
+        )
+
+        lines.append(
+
+            f"• {group.get('title', key)}\n"
+            f"  ID: {key}\n"
+            f"  Status: {status}"
+        )
+
+    await update.message.reply_text(
+        owner_reply(
+            "\n".join(lines)
+        )
+    )
+
+
+async def delgroup_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not is_admin(update):
+        return
+
+    if not context.args:
+
+        await update.message.reply_text(
+            owner_reply(
+                "Chat ID দিন।"
+            )
+        )
+
+        return
+
+    chat_id = parse_chat_id(
+        context.args[0]
+    )
+
+    if delete_group(
+        chat_id
+    ):
+
+        msg = (
+            "Group delete করা হয়েছে।"
+        )
+
+    else:
+
+        msg = (
+            "Group পাওয়া যায়নি।"
+        )
+
+    await update.message.reply_text(
+        owner_reply(msg)
+    )
+
+
+async def status_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not is_admin(update):
+        return
+
+    text = (
+
+        "📊 BOT STATUS\n\n"
+
+        "🤖 Gemini: "
+        + (
+            "READY"
+            if gemini_client
+            else "NOT READY"
+        )
+        + "\n"
+
+        "🔥 Firebase: "
+        + (
+            "CONNECTED"
+            if firebase_db
+            else "LOCAL MODE"
+        )
+        + "\n"
+
+        "📢 Auto Post: "
+        + (
+            "ON"
+            if autopost_data[
+                "enabled"
+            ]
+            else "OFF"
+        )
+        + "\n"
+
+        f"👥 Groups: "
+        f"{len(autopost_data['groups'])}\n"
+
+        f"📝 Posts: "
+        f"{len(autopost_data['posts'])}\n"
+
+        "⏰ Bangladesh Time: "
+        + now_bd().strftime(
+            "%d-%m-%Y %I:%M:%S %p"
+        )
+    )
+
+    await update.message.reply_text(
+        owner_reply(text)
+    )
+
+
+async def pausegroup_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not is_admin(update):
+        return
+
+    if not context.args:
+
+        await update.message.reply_text(
+            owner_reply(
+                "Chat ID দিন।"
+            )
+        )
+
+        return
+
+    key = str(
+        context.args[0]
+    )
+
+    if key not in autopost_data[
+        "groups"
+    ]:
+
+        await update.message.reply_text(
+            owner_reply(
+                "Group পাওয়া যায়নি।"
+            )
+        )
+
+        return
+
+    group = autopost_data[
+        "groups"
+    ][key]
+
+    group["active"] = not group.get(
+        "active",
+        True
+    )
+
+    save_autopost_data()
+
+    status = (
+        "চালু"
+        if group["active"]
+        else "বন্ধ"
+    )
+
+    await update.message.reply_text(
+        owner_reply(
+            "Group Auto Post "
+            + status
+            + " করা হয়েছে।"
+        )
+    )
+
+
+async def renamegroup_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not is_admin(update):
+        return
+
+    if len(context.args) < 2:
+
+        await update.message.reply_text(
+            owner_reply(
+                "ব্যবহার:\n"
+                "/renamegroup CHAT_ID নতুন নাম"
+            )
+        )
+
+        return
+
+    key = str(
+        context.args[0]
+    )
+
+    if key not in autopost_data[
+        "groups"
+    ]:
+
+        await update.message.reply_text(
+            owner_reply(
+                "Group পাওয়া যায়নি।"
+            )
+        )
+
+        return
+
+    new_name = " ".join(
+        context.args[1:]
+    ).strip()
+
+    autopost_data[
+        "groups"
+    ][key][
+        "title"
+    ] = new_name
+
+    save_autopost_data()
+
+    await update.message.reply_text(
+        owner_reply(
+            "Group-এর নাম '"
+            + new_name
+            + "' করা হয়েছে।"
+        )
+    )
+
+
+async def broadcast_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not is_admin(update):
+        return
+
+    text = " ".join(
+        context.args
+    ).strip()
+
+    replied = (
+        update.message.reply_to_message
+    )
+
+    if replied and not text:
+
+        if replied.text:
+            text = replied.text
+
+        elif replied.caption:
+            text = replied.caption
+
+    if not text and not (
+        replied
+        and replied.photo
+    ):
+
+        await update.message.reply_text(
+            owner_reply(
+                "Broadcast করার text "
+                "অথবা reply করা message দিন।"
+            )
+        )
+
+        return
+
+    sent = 0
+    failed = 0
+
+    for key in active_groups():
+
+        chat_id = parse_chat_id(
+            key
+        )
+
+        try:
+
+            if (
+                replied
+                and replied.photo
+            ):
+
+                await context.bot.send_photo(
+
+                    chat_id=chat_id,
+
+                    photo=(
+                        replied
+                        .photo[-1]
+                        .file_id
+                    ),
+
+                    caption=(
+                        text[:1024]
+                        if text
+                        else None
+                    ),
+                )
+
+            else:
+
+                await context.bot.send_message(
+
+                    chat_id=chat_id,
+
+                    text=text[:4096]
+                )
+
+            sent += 1
+
+        except Exception as e:
+
+            failed += 1
+
+            logger.warning(
+                "Broadcast failed: %s",
+                e
+            )
+
+    await update.message.reply_text(
+
+        owner_reply(
+
+            f"Broadcast সম্পন্ন। "
+            f"সফল: {sent}, "
+            f"ব্যর্থ: {failed}"
+        )
+    )
+
+
+async def list_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not is_admin(update):
+        return
+
+    await update.message.reply_text(
+        owner_reply(
+            list_posts_text()
+        )
+    )
+
+
+async def delete_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not is_admin(update):
+        return
+
+    if not context.args:
+
+        await update.message.reply_text(
+            owner_reply(
+                "Post ID দিন।"
+            )
+        )
+
+        return
+
+    post_id = context.args[0]
+
+    if delete_post(
+        post_id
+    ):
+
+        msg = (
+            f"ID {post_id} "
+            "Auto Post delete হয়েছে।"
+        )
+
+    else:
+
+        msg = (
+            f"ID {post_id} "
+            "পাওয়া যায়নি।"
+        )
+
+    await update.message.reply_text(
+        owner_reply(msg)
+    )
+
+
+async def clear_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not is_admin(update):
+        return
+
+    clear_posts()
+
+    await update.message.reply_text(
+        owner_reply(
+            "সব Auto Post clear করা হয়েছে।"
+        )
+    )
+
+
+async def on_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not is_admin(update):
+        return
+
+    autopost_data[
+        "enabled"
+    ] = True
+
+    save_autopost_data()
+
+    await update.message.reply_text(
+        owner_reply(
+            "Auto Post চালু করা হয়েছে।"
+        )
+    )
+
+
+async def off_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not is_admin(update):
+        return
+
+    autopost_data[
+        "enabled"
+    ] = False
+
+    save_autopost_data()
+
+    await update.message.reply_text(
+        owner_reply(
+            "Auto Post বন্ধ করা হয়েছে।"
+        )
+    )
+
+
+async def test_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not is_admin(update):
+        return
+
+    groups = active_groups()
+
+    if not groups:
+
+        await update.message.reply_text(
+            owner_reply(
+                "কোনো active group নেই।"
+            )
+        )
+
+        return
+
+    sent = 0
+
+    for key in groups:
+
+        try:
+
+            await context.bot.send_message(
+
+                chat_id=parse_chat_id(
+                    key
+                ),
+
+                text=(
+                    "🧪 RJ TEAM PREMIUM BOT\n"
+                    "Auto Post Test"
+                )
+            )
+
+            sent += 1
+
+        except Exception as e:
+
+            logger.warning(
+                "Test failed: %s",
+                e
+            )
+
+    await update.message.reply_text(
+
+        owner_reply(
+            f"Test message "
+            f"{sent}টি active group-এ "
+            "পাঠানো হয়েছে।"
+        )
+    )
+
+
+async def cancel_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not is_admin(update):
+        return
+
+    context.user_data.pop(
+        "owner_pending",
+        None
+    )
+
+    await update.message.reply_text(
+        owner_reply(
+            "Pending action cancel করা হয়েছে।"
+        )
+    )
+
+
+# ============================================================
+# OWNER NATURAL LANGUAGE
+# ============================================================
+
+async def handle_owner_natural_command(
+    update: Update,
+    text: str
+):
+
+    if not is_admin(update):
+        return False
+
+    raw = text.strip()
+    low = raw.lower()
+
+    # --------------------------------------------------------
+    # AUTO POST OFF
+    # --------------------------------------------------------
+
+    if (
+        re.search(
+            r"\b(auto\s*post|autopost)\b.*"
+            r"\b(off|বন্ধ|বন্ধ কর|বন্ধ করে দাও)\b",
+            low
+        )
+        or "অটো পোস্ট বন্ধ" in raw
+    ):
+
+        autopost_data[
+            "enabled"
+        ] = False
+
+        save_autopost_data()
+
+        await update.message.reply_text(
+            owner_reply(
+                "Auto Post বন্ধ করে দিয়েছি।"
+            )
+        )
+
+        return True
+
+    # --------------------------------------------------------
+    # AUTO POST ON
+    # --------------------------------------------------------
+
+    if (
+        re.search(
+            r"\b(auto\s*post|autopost)\b.*"
+            r"\b(on|চালু|চালু কর|চালু করে দাও)\b",
+            low
+        )
+        or "অটো পোস্ট চালু" in raw
+    ):
+
+        autopost_data[
+            "enabled"
+        ] = True
+
+        save_autopost_data()
+
+        await update.message.reply_text(
+            owner_reply(
+                "Auto Post চালু করে দিয়েছি।"
+            )
+        )
+
+        return True
+
+    # --------------------------------------------------------
+    # STATUS
+    # --------------------------------------------------------
+
+    if (
+        "status" in low
+        or "স্ট্যাটাস" in raw
+        or "অবস্থা দেখাও" in raw
+    ):
+
+        await status_command(
+            update,
+            None
+        )
+
+        return True
+
+    # --------------------------------------------------------
+    # GROUP LIST
+    # --------------------------------------------------------
+
+    if (
+        "group list" in low
+        or "groups list" in low
+        or "groups show" in low
+        or "গ্রুপ দেখাও" in raw
+        or "গ্রুপ লিস্ট" in raw
+    ):
+
+        await groups_command(
+            update,
+            None
+        )
+
+        return True
+
+    # --------------------------------------------------------
+    # POST LIST
+    # --------------------------------------------------------
+
+    if (
+        low in {
+            "list",
+            "show list",
+            "auto post list",
+            "autopost list"
+        }
+        or "list দেখাও" in raw
+        or "লিস্ট দেখাও" in raw
+    ):
+
+        await list_command(
+            update,
+            None
+        )
+
+        return True
+
+    # --------------------------------------------------------
+    # DELETE ID
+    # --------------------------------------------------------
+
+    delete_match = re.search(
+
+        r"(?:id|আইডি)"
+        r"\s*#?\s*(\d+)"
+        r".*?"
+        r"(?:delete|ডিলিট|মুছে|remove)",
+
+        raw,
+        re.I
+    )
+
+    if not delete_match:
+
+        delete_match = re.search(
+
+            r"(?:delete|ডিলিট|remove|মুছে)"
+            r".*?"
+            r"(?:id|আইডি)"
+            r"\s*#?\s*(\d+)",
+
+            raw,
+            re.I
+        )
+
+    if delete_match:
+
+        post_id = (
+            delete_match.group(1)
+        )
+
+        if delete_post(
+            post_id
+        ):
+
+            msg = (
+                f"ID {post_id} "
+                "Auto Post delete করে দিয়েছি।"
+            )
+
+        else:
+
+            msg = (
+                f"ID {post_id} "
+                "পাওয়া যায়নি।"
+            )
+
+        await update.message.reply_text(
+            owner_reply(msg)
+        )
+
+        return True
+
+    # --------------------------------------------------------
+    # CLEAR ALL
+    # --------------------------------------------------------
+
+    if (
+        ("all" in low or "সব" in raw)
+        and (
+            "auto post" in low
+            or "autopost" in low
+            or "অটো পোস্ট" in raw
+        )
+        and any(
+            word in low
+            for word in [
+                "delete",
+                "clear",
+                "remove"
+            ]
+        )
+    ):
+
+        clear_posts()
+
+        await update.message.reply_text(
+            owner_reply(
+                "সব Auto Post মুছে দিয়েছি।"
+            )
+        )
+
+        return True
+
+    # --------------------------------------------------------
+    # ADD CURRENT GROUP
+    # --------------------------------------------------------
+
+    if (
+        "add group" in low
+        or "group add" in low
+        or "গ্রুপ add" in low
+        or "গ্রুপ যোগ" in raw
+    ):
+
+        chat = update.effective_chat
+
+        if chat and add_group(
+            chat.id,
+            chat.title
+            or str(chat.id)
+        ):
+
+            msg = (
+                "এই group Auto Post "
+                "list-এ যোগ করে দিয়েছি।"
+            )
+
+        else:
+
+            msg = (
+                "এই group আগে থেকেই "
+                "list-এ আছে।"
+            )
+
+        await update.message.reply_text(
+            owner_reply(msg)
+        )
+
+        return True
+
+    # --------------------------------------------------------
+    # BROADCAST
+    # --------------------------------------------------------
+
+    if (
+        low.startswith(
+            "broadcast "
+        )
+        or raw.startswith(
+            "ব্রডকাস্ট "
+        )
+    ):
+
+        if low.startswith(
+            "broadcast "
+        ):
+
+            broadcast_text = (
+                raw[
+                    len("broadcast "):
+                ].strip()
+            )
+
+        else:
+
+            broadcast_text = (
+                raw[
+                    len("ব্রডকাস্ট "):
+                ].strip()
+            )
+
+        if not broadcast_text:
+
+            await update.message.reply_text(
+                owner_reply(
+                    "Broadcast message-টা দিন।"
+                )
+            )
+
+            return True
+
+        sent = 0
+        failed = 0
+
+        for key in active_groups():
+
+            try:
+
+                await update.get_bot().send_message(
+
+                    chat_id=parse_chat_id(
+                        key
+                    ),
+
+                    text=broadcast_text[
+                        :4096
+                    ]
+                )
+
+                sent += 1
+
+            except Exception as e:
+
+                failed += 1
+
+                logger.warning(
+                    "Natural broadcast failed: %s",
+                    e
+                )
+
+        await update.message.reply_text(
+
+            owner_reply(
+
+                f"Broadcast শেষ। "
+                f"সফল: {sent}, "
+                f"ব্যর্থ: {failed}"
+            )
+        )
+
+        return True
+
+    # --------------------------------------------------------
+    # PAUSE / RESUME GROUP
+    # --------------------------------------------------------
+
+    pause_match = re.search(
+
+        r"(?:pause|resume|toggle|বন্ধ|চালু)"
+        r".*?"
+        r"(?:group|গ্রুপ)"
+        r"\s*(-?\d+)",
+
+        raw,
+        re.I
+    )
+
+    if pause_match:
+
+        key = (
+            pause_match.group(1)
+        )
+
+        if key not in autopost_data[
+            "groups"
+        ]:
+
+            await update.message.reply_text(
+                owner_reply(
+                    "এই group পাওয়া যায়নি।"
+                )
+            )
+
+            return True
+
+        group = autopost_data[
+            "groups"
+        ][key]
+
+        group[
+            "active"
+        ] = not group.get(
+            "active",
+            True
+        )
+
+        save_autopost_data()
+
+        await update.message.reply_text(
+
+            owner_reply(
+
+                "Group Auto Post "
+                + (
+                    "চালু"
+                    if group["active"]
+                    else "বন্ধ"
+                )
+                + " করে দিয়েছি।"
+            )
+        )
+
+        return True
+
+    # --------------------------------------------------------
+    # SCHEDULED AUTO POST
+    # Example:
+    # 8:30 PM আজকের পোস্ট
+    # auto post 8:30 PM আজকের পোস্ট
+    # --------------------------------------------------------
+
+    schedule_source = raw
+
+    match = re.search(
+
+        r"(?:auto\s*post|autopost|অটো\s*পোস্ট)"
+        r"\s+(.+)",
+
+        raw,
+        re.I
+    )
+
+    if match:
+
+        schedule_source = (
+            match.group(1).strip()
+        )
+
+    post_time, post_text = (
+        extract_time_and_text(
+            schedule_source
+        )
+    )
+
+    if post_time and post_text:
+
+        groups = list(
+            autopost_data[
+                "groups"
+            ].keys()
+        )
+
+        # If no group is configured,
+        # use the current group.
+        if not groups:
+
+            chat = update.effective_chat
+
+            if chat:
+
+                add_group(
+                    chat.id,
+                    chat.title
+                    or str(chat.id)
+                )
+
+                groups = [
+                    str(chat.id)
+                ]
+
+        post = add_post(
+
+            post_time=post_time,
+
+            text=post_text,
+
+            group_ids=groups
+        )
+
+        await update.message.reply_text(
+
+            owner_reply(
+
+                "Auto Post তৈরি করে দিয়েছি.\n"
+                f"🆔 ID: {post['id']}\n"
+                f"⏰ Time: {post_time}\n"
+                f"👥 Groups: {len(groups)}\n"
+                f"📝 {post_text}"
+            )
+        )
+
+        return True
+
+    return False
+
+
+# ============================================================
+# CALLBACK BUTTONS
+# ============================================================
+
+async def callback_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    if query.data == "about":
+
+        await query.message.reply_text(
+            ABOUT_TEXT
+        )
+
+    elif query.data == "translate":
+
+        await query.message.reply_text(
+
+            "🌐 Translation\n\n"
+            "আপনার text translate করতে:\n"
+            "/translate আপনার text"
+        )
+
+
+# ============================================================
+# NORMAL MESSAGE HANDLER
+# ============================================================
+
+async def handle_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not update.message:
+        return
+
+    text = update.message.text
+
+    if not text:
+        return
+
+    # Owner commands first.
+    if is_admin(update):
+
+        handled = (
+            await handle_owner_natural_command(
+                update,
+                text
+            )
+        )
+
+        if handled:
+            return
+
+    # Normal Gemini reply.
+    answer = await ask_gemini(
+        text
+    )
+
+    user_id = (
+        update.effective_user.id
+    )
+
+    user_last_ai_reply[
+        user_id
+    ] = answer
+
+    # Every Owner AI reply gets "বস".
+    if is_admin(update):
+
+        answer = owner_reply(
+            answer
+        )
+
+    keyboard = [
+
+        [
+
+            InlineKeyboardButton(
+                "🌐 Translate",
+                callback_data="translate"
+            )
+
+        ]
+
+    ]
+
+    await update.message.reply_text(
+
+        answer,
+
+        reply_markup=(
+            InlineKeyboardMarkup(
+                keyboard
+            )
+        )
+    )
+
+
+# ============================================================
+# AUTO POST WORKER
+# ============================================================
+
+async def auto_post_worker(
+    application
+):
+
+    logger.info(
+        "Auto Post worker started."
+    )
+
+    last_sent = set()
+
+    while True:
+
+        try:
+
+            await asyncio.sleep(
+                20
+            )
+
+            if not autopost_data.get(
+                "enabled",
+                True
+            ):
+
+                continue
+
+            current = now_bd()
+
+            current_hm = (
+                current.strftime(
+                    "%H:%M"
+                )
+            )
+
+            date_key = (
+                current.strftime(
+                    "%Y-%m-%d"
+                )
+            )
+
+            for post in list(
+                autopost_data.get(
+                    "posts",
+                    []
+                )
+            ):
+
+                if not post.get(
+                    "enabled",
+                    True
+                ):
+
+                    continue
+
+                if post.get(
+                    "post_time"
+                ) != current_hm:
+
+                    continue
+
+                marker = (
+                    f"{date_key}:"
+                    f"{post.get('id')}"
+                )
+
+                if marker in last_sent:
+
+                    continue
+
+                group_ids = (
+                    post.get(
+                        "group_ids"
+                    )
+                    or list(
+                        autopost_data[
+                            "groups"
+                        ].keys()
+                    )
+                )
+
+                for key in group_ids:
+
+                    group = (
+                        autopost_data[
+                            "groups"
+                        ].get(
+                            str(key)
+                        )
+                    )
+
+                    if (
+                        group
+                        and not group.get(
+                            "active",
+                            True
+                        )
+                    ):
+
+                        continue
+
+                    chat_id = (
+                        parse_chat_id(
+                            key
+                        )
+                    )
+
+                    try:
+
+                        photo_id = (
+                            post.get(
+                                "photo_id"
+                            )
+                        )
+
+                        text = (
+                            post.get(
+                                "text"
+                            )
+                            or post.get(
+                                "caption"
+                            )
+                            or ""
+                        )
+
+                        if photo_id:
+
+                            await application.bot.send_photo(
+
+                                chat_id=chat_id,
+
+                                photo=photo_id,
+
+                                caption=(
+                                    text[:1024]
+                                    if text
+                                    else None
+                                )
+                            )
+
+                        else:
+
+                            await application.bot.send_message(
+
+                                chat_id=chat_id,
+
+                                text=text[:4096]
+                            )
+
+                    except Exception as e:
+
+                        logger.warning(
+
+                            "Auto Post failed "
+                            "for %s: %s",
+
+                            chat_id,
+                            e
+                        )
+
+                last_sent.add(
+                    marker
+                )
+
+            # Prevent unlimited memory growth.
+            if len(last_sent) > 5000:
+
+                last_sent = set(
+                    list(last_sent)[-1000:]
+                )
+
+        except asyncio.CancelledError:
+
+            break
+
+        except Exception as e:
+
+            logger.exception(
+                "Auto Post worker error: %s",
+                e
+            )
+
+            await asyncio.sleep(
+                10
+            )
+
+
+# ============================================================
+# ERROR HANDLER
+# ============================================================
+
+async def error_handler(
+    update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    logger.exception(
+        "Unhandled Telegram error: %s",
+        context.error
+    )
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main():
+
+    if not BOT_TOKEN:
+
+        raise RuntimeError(
+            "BOT_TOKEN environment variable "
+            "is missing."
+        )
+
+    init_firebase()
+
+    load_autopost_data()
+
+    init_gemini()
+
+    application = (
+        Application
+        .builder()
+        .token(
+            BOT_TOKEN
+        )
+        .build()
+    )
+
+    # --------------------------------------------------------
+    # PUBLIC
+    # --------------------------------------------------------
+
+    application.add_handler(
+        CommandHandler(
+            "start",
+            start_command
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "help",
+            help_command
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "about",
+            about_command
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "translate",
+            translate_command
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "translate_last",
+            translate_last_command
+        )
+    )
+
+    # --------------------------------------------------------
+    # OWNER
+    # --------------------------------------------------------
+
+    application.add_handler(
+        CommandHandler(
+            "autopost",
+            autopost_command
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "addgroup",
+            addgroup_command
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "groups",
+            groups_command
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "delgroup",
+            delgroup_command
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "status",
+            status_command
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "pausegroup",
+            pausegroup_command
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "renamegroup",
+            renamegroup_command
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "broadcast",
+            broadcast_command
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "list",
+            list_command
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "delete",
+            delete_command
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "clear",
+            clear_command
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "on",
+            on_command
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "off",
+            off_command
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "test",
+            test_command
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "cancel",
+            cancel_command
+        )
+    )
+
+    # --------------------------------------------------------
+    # BUTTONS
+    # --------------------------------------------------------
+
+    application.add_handler(
+        CallbackQueryHandler(
+            callback_handler
+        )
+    )
+
+    # --------------------------------------------------------
+    # TEXT
+    # --------------------------------------------------------
+
+    application.add_handler(
+
+        MessageHandler(
+
+            filters.TEXT
+            & ~filters.COMMAND,
+
+            handle_message
+        )
+    )
+
+    application.add_error_handler(
+        error_handler
+    )
+
+    async def post_init(app):
+
+        app.create_task(
+            auto_post_worker(
+                app
+            )
+        )
+
+    application.post_init = (
+        post_init
+    )
+
+    logger.info(
+        "RJ Premium Bot starting..."
+    )
+
+    # --------------------------------------------------------
+    # RENDER WEBHOOK
+    # --------------------------------------------------------
+
+    if RENDER_EXTERNAL_URL:
+
+        base_url = (
+            RENDER_EXTERNAL_URL
+            .rstrip("/")
+        )
+
+        webhook_path = (
+            "/telegram/"
+            + BOT_TOKEN
+        )
+
+        logger.info(
+            "Starting webhook mode."
+        )
+
+        application.run_webhook(
+
+            listen="0.0.0.0",
+
+            port=PORT,
+
+            url_path=webhook_path,
+
+            webhook_url=(
+                base_url
+                + webhook_path
+            )
+        )
+
+    # --------------------------------------------------------
+    # LOCAL / RENDER POLLING
+    # --------------------------------------------------------
+
+    else:
+
+        logger.info(
+            "Starting polling mode."
+        )
+
+        application.run_polling(
+
+            allowed_updates=(
+                Update.ALL_TYPES
+            ),
+
+            drop_pending_updates=False
+        )
+
+
+# ============================================================
+# START
+# ============================================================
 
 if __name__ == "__main__":
     main()
