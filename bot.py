@@ -1,5 +1,6 @@
 # ============================================================
 # 👑 RJ TEAM BANGLADESH - PREMIUM AI BOT
+# COMPLETE FIXED VERSION
 # ============================================================
 
 import os
@@ -14,58 +15,135 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import firebase_admin
 from firebase_admin import credentials, firestore
+
 from google import genai
 from google.genai import types
 
 from telegram import Update
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler,
-    CallbackQueryHandler, ContextTypes, filters
+    Application,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    filters,
 )
 
 # ========================= CONFIG ============================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "RJteam1").strip().lstrip("@")
-ADMIN_USER_ID_RAW = os.getenv("ADMIN_USER_ID", "").strip()
-TARGET_CHAT_ID = os.getenv("TARGET_CHAT_ID", "").strip()
-AUTOPOST_FILE = os.getenv("AUTOPOST_FILE", "autopost.json").strip()
-AUTOPOST_ENABLED = os.getenv("AUTOPOST_ENABLED", "true").lower() in ("1", "true", "yes", "on")
-FIREBASE_SERVICE_ACCOUNT_JSON = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON", "").strip()
-AUTOPOST_FIREBASE_COLLECTION = os.getenv("AUTOPOST_FIREBASE_COLLECTION", "rj_bot_config").strip()
-AUTOPOST_FIREBASE_DOCUMENT = os.getenv("AUTOPOST_FIREBASE_DOCUMENT", "autopost").strip()
-PORT = int(os.getenv("PORT", "10000"))
+
+ADMIN_USERNAME = (
+    os.getenv("ADMIN_USERNAME", "RJteam1")
+    .strip()
+    .lstrip("@")
+)
+
+ADMIN_USER_ID_RAW = os.getenv(
+    "ADMIN_USER_ID",
+    ""
+).strip()
+
+TARGET_CHAT_ID = os.getenv(
+    "TARGET_CHAT_ID",
+    ""
+).strip()
+
+AUTOPOST_FILE = os.getenv(
+    "AUTOPOST_FILE",
+    "autopost.json"
+).strip()
+
+AUTOPOST_ENABLED = (
+    os.getenv(
+        "AUTOPOST_ENABLED",
+        "true"
+    ).lower()
+    in ("1", "true", "yes", "on")
+)
+
+FIREBASE_SERVICE_ACCOUNT_JSON = os.getenv(
+    "FIREBASE_SERVICE_ACCOUNT_JSON",
+    ""
+).strip()
+
+AUTOPOST_FIREBASE_COLLECTION = os.getenv(
+    "AUTOPOST_FIREBASE_COLLECTION",
+    "rj_bot_config"
+).strip()
+
+AUTOPOST_FIREBASE_DOCUMENT = os.getenv(
+    "AUTOPOST_FIREBASE_DOCUMENT",
+    "autopost"
+).strip()
+
+PORT = int(
+    os.getenv(
+        "PORT",
+        "10000"
+    )
+)
 
 BD = ZoneInfo("Asia/Dhaka")
+
 OWNER_USERNAME = "@" + ADMIN_USERNAME
 
 try:
-    ADMIN_USER_ID = int(ADMIN_USER_ID_RAW) if ADMIN_USER_ID_RAW else None
+    ADMIN_USER_ID = (
+        int(ADMIN_USER_ID_RAW)
+        if ADMIN_USER_ID_RAW
+        else None
+    )
 except Exception:
     ADMIN_USER_ID = None
 
+
+# ============================================================
+# GEMINI MODELS
+# ============================================================
+# IMPORTANT:
+# Old unavailable models removed.
+# Primary model first, then fallback models.
+# ============================================================
+
 GEMINI_MODELS = [
-    "gemini-2.5-flash",
-    "gemini-2.0-flash",
-    "gemini-2.5-flash-lite",
+    "gemini-3.5-flash-lite",
+    "gemini-3.8-flash",
+    "gemini-3.1-flash-lite",
 ]
+
 
 SYSTEM_PROMPT = """
 তুমি RJ TEAM BANGLADESH-এর Premium AI Assistant।
+
 স্বাভাবিক, ভদ্র ও বন্ধুসুলভভাবে উত্তর দেবে।
-বাংলা প্রশ্নে বাংলায় উত্তর দেবে; Banglish হলে সহজ বাংলায়/Banglish-এ উত্তর দিতে পারো।
+
+বাংলা প্রশ্নে বাংলায় উত্তর দেবে।
+Banglish হলে সহজ বাংলা/Banglish-এ উত্তর দিতে পারো।
+
 প্রযুক্তি/কোডিং প্রশ্নে পরিষ্কারভাবে সাহায্য করবে।
-ভুল তথ্য বানিয়ে বলবে না এবং অযথা বড় উত্তর দেবে না।
+
+ভুল তথ্য বানিয়ে বলবে না।
+অযথা অনেক বড় উত্তর দেবে না।
+
 Owner @RJteam1-এর সাথে কথা বলার সময় তাকে "বস" বলে সম্বোধন করবে।
 """
 
+
 POST_SYSTEM_PROMPT = """
 তুমি RJ TEAM BANGLADESH-এর Premium Telegram Post Writer।
-ব্যবহারকারীর দেওয়া কথার মূল অর্থ ঠিক রেখে সুন্দর, সংক্ষিপ্ত ও আকর্ষণীয় বাংলা Telegram/group caption তৈরি করবে।
+
+ব্যবহারকারীর দেওয়া কথার মূল অর্থ ঠিক রেখে
+সুন্দর, সংক্ষিপ্ত ও আকর্ষণীয় বাংলা Telegram/group caption তৈরি করবে।
+
 প্রয়োজনে heading, spacing ও Unicode emoji ব্যবহার করবে।
+
 নিজে থেকে নতুন তথ্য, link, phone number বা দাবি বানাবে না।
 """
+
+
+# ========================= GLOBAL ============================
 
 gemini_client = None
 firebase_db = None
@@ -73,8 +151,11 @@ scheduler_task = None
 health_thread = None
 
 OWNER_SMS_TO_GROUP = False
+
 USER_SMS_TO_GROUP = {}
+
 USER_REGISTRY = {}
+
 user_last_ai_reply = {}
 
 autopost_data = {
@@ -87,56 +168,155 @@ autopost_data = {
 }
 
 
-def normalize_storage():
-    """Normalize old Firebase/local data so dict/list schema cannot crash handlers."""
-    global autopost_data, USER_SMS_TO_GROUP, USER_REGISTRY, OWNER_SMS_TO_GROUP
+# ============================================================
+# STORAGE NORMALIZER
+# ============================================================
 
-    if not isinstance(autopost_data, dict):
+def normalize_storage():
+    """
+    Normalize old Firebase/local data.
+    """
+
+    global autopost_data
+    global USER_SMS_TO_GROUP
+    global USER_REGISTRY
+    global OWNER_SMS_TO_GROUP
+
+    if not isinstance(
+        autopost_data,
+        dict
+    ):
         autopost_data = {}
 
-    # Old versions may have stored groups as a list. Convert safely to dict keyed by chat id.
-    raw_groups = autopost_data.get("groups", {})
-    if isinstance(raw_groups, list):
+    # ---------------- GROUPS ----------------
+
+    raw_groups = autopost_data.get(
+        "groups",
+        {}
+    )
+
+    if isinstance(
+        raw_groups,
+        list
+    ):
         converted = {}
+
         for item in raw_groups:
-            if not isinstance(item, dict):
+
+            if not isinstance(
+                item,
+                dict
+            ):
                 continue
-            gid = item.get("id", item.get("chat_id"))
+
+            gid = item.get(
+                "id",
+                item.get("chat_id")
+            )
+
             if gid is None:
                 continue
+
             converted[str(gid)] = item
+
         autopost_data["groups"] = converted
-    elif not isinstance(raw_groups, dict):
+
+    elif not isinstance(
+        raw_groups,
+        dict
+    ):
         autopost_data["groups"] = {}
 
-    raw_posts = autopost_data.get("posts", [])
-    if not isinstance(raw_posts, list):
+    # ---------------- POSTS ----------------
+
+    raw_posts = autopost_data.get(
+        "posts",
+        []
+    )
+
+    if not isinstance(
+        raw_posts,
+        list
+    ):
         autopost_data["posts"] = []
 
-    raw_sms = autopost_data.get("user_sms_to_group", {})
-    if isinstance(raw_sms, list):
-        raw_sms = {str(x): True for x in raw_sms}
-    if not isinstance(raw_sms, dict):
+    # ---------------- USER SMS ----------------
+
+    raw_sms = autopost_data.get(
+        "user_sms_to_group",
+        {}
+    )
+
+    if isinstance(
+        raw_sms,
+        list
+    ):
+        raw_sms = {
+            str(x): True
+            for x in raw_sms
+        }
+
+    if not isinstance(
+        raw_sms,
+        dict
+    ):
         raw_sms = {}
-    USER_SMS_TO_GROUP = {str(k): bool(v) for k, v in raw_sms.items()}
 
-    raw_registry = autopost_data.get("user_registry", {})
-    if not isinstance(raw_registry, dict):
+    USER_SMS_TO_GROUP = {
+        str(k): bool(v)
+        for k, v in raw_sms.items()
+    }
+
+    # ---------------- USER REGISTRY ----------------
+
+    raw_registry = autopost_data.get(
+        "user_registry",
+        {}
+    )
+
+    if not isinstance(
+        raw_registry,
+        dict
+    ):
         raw_registry = {}
-    USER_REGISTRY = {str(k): v for k, v in raw_registry.items() if isinstance(v, dict)}
 
-    OWNER_SMS_TO_GROUP = bool(autopost_data.get("owner_sms_to_group", False))
-    autopost_data["user_sms_to_group"] = USER_SMS_TO_GROUP
-    autopost_data["user_registry"] = USER_REGISTRY
+    USER_REGISTRY = {
+        str(k): v
+        for k, v in raw_registry.items()
+        if isinstance(v, dict)
+    }
 
-# ========================= UI ================================
+    # ---------------- OWNER SMS ----------------
 
-def vip_header(title="RJ TEAM BANGLADESH"):
+    OWNER_SMS_TO_GROUP = bool(
+        autopost_data.get(
+            "owner_sms_to_group",
+            False
+        )
+    )
+
+    autopost_data[
+        "user_sms_to_group"
+    ] = USER_SMS_TO_GROUP
+
+    autopost_data[
+        "user_registry"
+    ] = USER_REGISTRY
+
+
+# ============================================================
+# UI
+# ============================================================
+
+def vip_header(
+    title="RJ TEAM BANGLADESH"
+):
     return (
         "╔════════════════════════════╗\n"
         f"        👑 {title}\n"
         "╚════════════════════════════╝"
     )
+
 
 def vip_footer():
     return (
@@ -146,185 +326,485 @@ def vip_footer():
         "━━━━━━━━━━━━━━━━━━━━"
     )
 
+
 def success_box(message):
-    return vip_header("SUCCESS") + "\n\n" + message + vip_footer()
+    return (
+        vip_header("SUCCESS")
+        + "\n\n"
+        + message
+        + vip_footer()
+    )
+
 
 def error_box(message):
-    return vip_header("ERROR") + "\n\n" + message + vip_footer()
+    return (
+        vip_header("ERROR")
+        + "\n\n"
+        + message
+        + vip_footer()
+    )
+
 
 def info_box(message):
-    return vip_header("INFORMATION") + "\n\n" + message + vip_footer()
+    return (
+        vip_header("INFORMATION")
+        + "\n\n"
+        + message
+        + vip_footer()
+    )
+
 
 def owner_reply(message):
-    return "👑 বস,\n\n" + message + vip_footer()
+    return (
+        "👑 বস,\n\n"
+        + message
+        + vip_footer()
+    )
 
-# ========================= OWNER ==============================
+
+# ============================================================
+# OWNER
+# ============================================================
 
 def is_owner(user):
+
     if not user:
         return False
-    if ADMIN_USER_ID is not None and user.id == ADMIN_USER_ID:
+
+    if (
+        ADMIN_USER_ID is not None
+        and user.id == ADMIN_USER_ID
+    ):
         return True
-    return bool(user.username) and user.username.lstrip("@").lower() == ADMIN_USERNAME.lower()
+
+    return (
+        bool(user.username)
+        and user.username
+        .lstrip("@")
+        .lower()
+        == ADMIN_USERNAME.lower()
+    )
+
 
 async def require_owner(update):
-    if not is_owner(update.effective_user):
+
+    if not is_owner(
+        update.effective_user
+    ):
+
         if update.effective_message:
+
             await update.effective_message.reply_text(
                 "⛔ এই Control শুধুমাত্র Owner-এর জন্য।"
             )
+
         return False
+
     return True
 
-# ========================= STORAGE ============================
+
+# ============================================================
+# FIREBASE
+# ============================================================
 
 def init_firebase():
+
     global firebase_db
+
     if firebase_db is not None:
         return firebase_db
+
     if not FIREBASE_SERVICE_ACCOUNT_JSON:
         return None
+
     try:
+
         if not firebase_admin._apps:
-            info = json.loads(FIREBASE_SERVICE_ACCOUNT_JSON)
-            firebase_admin.initialize_app(credentials.Certificate(info))
+
+            info = json.loads(
+                FIREBASE_SERVICE_ACCOUNT_JSON
+            )
+
+            firebase_admin.initialize_app(
+                credentials.Certificate(info)
+            )
+
         firebase_db = firestore.client()
+
     except Exception as e:
-        logging.exception("Firebase initialization failed: %s", e)
+
+        logging.exception(
+            "Firebase initialization failed: %s",
+            e
+        )
+
         firebase_db = None
+
     return firebase_db
 
+
+# ============================================================
+# LOCAL STORAGE
+# ============================================================
+
 def save_local():
+
     try:
-        with open(AUTOPOST_FILE, "w", encoding="utf-8") as f:
-            json.dump(autopost_data, f, ensure_ascii=False, indent=2)
+
+        with open(
+            AUTOPOST_FILE,
+            "w",
+            encoding="utf-8"
+        ) as f:
+
+            json.dump(
+                autopost_data,
+                f,
+                ensure_ascii=False,
+                indent=2
+            )
+
         return True
+
     except Exception:
-        logging.exception("Local save failed")
+
+        logging.exception(
+            "Local save failed"
+        )
+
         return False
+
 
 def load_local():
-    global autopost_data, OWNER_SMS_TO_GROUP, USER_SMS_TO_GROUP, USER_REGISTRY
-    if not os.path.exists(AUTOPOST_FILE):
+
+    global autopost_data
+    global OWNER_SMS_TO_GROUP
+    global USER_SMS_TO_GROUP
+    global USER_REGISTRY
+
+    if not os.path.exists(
+        AUTOPOST_FILE
+    ):
         return
+
     try:
-        with open(AUTOPOST_FILE, "r", encoding="utf-8") as f:
+
+        with open(
+            AUTOPOST_FILE,
+            "r",
+            encoding="utf-8"
+        ) as f:
+
             data = json.load(f)
-        if isinstance(data, dict):
-            autopost_data.update(data)
+
+        if isinstance(
+            data,
+            dict
+        ):
+
+            autopost_data.update(
+                data
+            )
+
         normalize_storage()
-        OWNER_SMS_TO_GROUP = bool(autopost_data.get("owner_sms_to_group", False))
+
+        OWNER_SMS_TO_GROUP = bool(
+            autopost_data.get(
+                "owner_sms_to_group",
+                False
+            )
+        )
+
         USER_SMS_TO_GROUP = {
             str(k): bool(v)
-            for k, v in autopost_data.get("user_sms_to_group", {}).items()
+            for k, v
+            in autopost_data.get(
+                "user_sms_to_group",
+                {}
+            ).items()
         }
+
         USER_REGISTRY = {
             str(k): v
-            for k, v in autopost_data.get("user_registry", {}).items()
+            for k, v
+            in autopost_data.get(
+                "user_registry",
+                {}
+            ).items()
         }
+
     except Exception:
-        logging.exception("Local load failed")
+
+        logging.exception(
+            "Local load failed"
+        )
+
+
+# ============================================================
+# FIREBASE LOAD
+# ============================================================
 
 def firebase_load():
-    global autopost_data, OWNER_SMS_TO_GROUP, USER_SMS_TO_GROUP, USER_REGISTRY
+
+    global autopost_data
+    global OWNER_SMS_TO_GROUP
+    global USER_SMS_TO_GROUP
+    global USER_REGISTRY
+
     db = init_firebase()
+
     if db is None:
         return
+
     try:
-        snap = db.collection(AUTOPOST_FIREBASE_COLLECTION).document(
-            AUTOPOST_FIREBASE_DOCUMENT
-        ).get()
+
+        snap = (
+            db.collection(
+                AUTOPOST_FIREBASE_COLLECTION
+            )
+            .document(
+                AUTOPOST_FIREBASE_DOCUMENT
+            )
+            .get()
+        )
+
         if not snap.exists:
             return
+
         data = snap.to_dict() or {}
-        if isinstance(data, dict):
-            autopost_data.update(data)
+
+        if isinstance(
+            data,
+            dict
+        ):
+
+            autopost_data.update(
+                data
+            )
+
         normalize_storage()
-        OWNER_SMS_TO_GROUP = bool(autopost_data.get("owner_sms_to_group", False))
+
+        OWNER_SMS_TO_GROUP = bool(
+            autopost_data.get(
+                "owner_sms_to_group",
+                False
+            )
+        )
+
         USER_SMS_TO_GROUP = {
             str(k): bool(v)
-            for k, v in autopost_data.get("user_sms_to_group", {}).items()
+            for k, v
+            in autopost_data.get(
+                "user_sms_to_group",
+                {}
+            ).items()
         }
+
         USER_REGISTRY = {
             str(k): v
-            for k, v in autopost_data.get("user_registry", {}).items()
+            for k, v
+            in autopost_data.get(
+                "user_registry",
+                {}
+            ).items()
         }
+
     except Exception:
-        logging.exception("Firebase load failed")
+
+        logging.exception(
+            "Firebase load failed"
+        )
+
+
+# ============================================================
+# FIREBASE SAVE
+# ============================================================
 
 def firebase_save():
+
     db = init_firebase()
+
     if db is None:
         return False
+
     try:
-        db.collection(AUTOPOST_FIREBASE_COLLECTION).document(
-            AUTOPOST_FIREBASE_DOCUMENT
-        ).set(autopost_data)
+
+        (
+            db.collection(
+                AUTOPOST_FIREBASE_COLLECTION
+            )
+            .document(
+                AUTOPOST_FIREBASE_DOCUMENT
+            )
+            .set(
+                autopost_data
+            )
+        )
+
         return True
+
     except Exception:
-        logging.exception("Firebase save failed")
+
+        logging.exception(
+            "Firebase save failed"
+        )
+
         return False
 
+
+# ============================================================
+# SAVE EVERYTHING
+# ============================================================
+
 def save_all():
+
     normalize_storage()
-    autopost_data["owner_sms_to_group"] = OWNER_SMS_TO_GROUP
-    autopost_data["user_sms_to_group"] = USER_SMS_TO_GROUP
-    autopost_data["user_registry"] = USER_REGISTRY
+
+    autopost_data[
+        "owner_sms_to_group"
+    ] = OWNER_SMS_TO_GROUP
+
+    autopost_data[
+        "user_sms_to_group"
+    ] = USER_SMS_TO_GROUP
+
+    autopost_data[
+        "user_registry"
+    ] = USER_REGISTRY
+
     save_local()
+
     firebase_save()
 
-# ========================= REGISTRY ===========================
+
+# ============================================================
+# USER REGISTRY
+# ============================================================
 
 def register_user(user):
+
     if not user:
         return
-    uid = str(user.id)
-    username = f"@{user.username}" if user.username else ""
+
+    uid = str(
+        user.id
+    )
+
+    username = (
+        f"@{user.username}"
+        if user.username
+        else ""
+    )
+
     name = " ".join(
-        x for x in [user.first_name or "", user.last_name or ""]
+        x
+        for x in [
+            user.first_name or "",
+            user.last_name or ""
+        ]
         if x
     ).strip()
+
     data = {
         "user_id": user.id,
         "username": username,
         "name": name,
         "updated_at": datetime.now(BD).isoformat(),
     }
-    USER_REGISTRY[uid] = data
-    if username:
-        USER_REGISTRY[username.lower()] = data
-    autopost_data["user_registry"] = USER_REGISTRY
 
-# ========================= GEMINI =============================
+    USER_REGISTRY[
+        uid
+    ] = data
+
+    if username:
+
+        USER_REGISTRY[
+            username.lower()
+        ] = data
+
+    autopost_data[
+        "user_registry"
+    ] = USER_REGISTRY
+
+
+# ============================================================
+# GEMINI INITIALIZATION
+# ============================================================
 
 def init_gemini():
+
     global gemini_client
+
     if gemini_client is not None:
         return gemini_client
+
     if not GEMINI_API_KEY:
-        return None
-    try:
-        gemini_client = genai.Client(api_key=GEMINI_API_KEY)
-        return gemini_client
-    except Exception:
-        logging.exception("Gemini initialization failed")
+        logging.error(
+            "GEMINI_API_KEY is missing."
+        )
         return None
 
-async def ask_gemini(prompt, system_prompt=SYSTEM_PROMPT):
+    try:
+
+        gemini_client = genai.Client(
+            api_key=GEMINI_API_KEY
+        )
+
+        logging.info(
+            "Gemini client initialized."
+        )
+
+        logging.info(
+            "Gemini models: %s",
+            ", ".join(GEMINI_MODELS)
+        )
+
+        return gemini_client
+
+    except Exception:
+
+        logging.exception(
+            "Gemini initialization failed"
+        )
+
+        gemini_client = None
+
+        return None
+
+
+# ============================================================
+# GEMINI AI
+# ============================================================
+
+async def ask_gemini(
+    prompt,
+    system_prompt=SYSTEM_PROMPT
+):
+
     client = init_gemini()
+
     if client is None:
+
         return (
-            "দুঃখিত, বস। 😔 Gemini API সংযুক্ত নেই। "
+            "দুঃখিত, বস। 😔\n\n"
+            "Gemini API সংযুক্ত নেই।\n"
             "Render-এর GEMINI_API_KEY পরীক্ষা করুন।"
         )
 
     last_error = None
 
+    config = types.GenerateContentConfig(
+        system_instruction=system_prompt,
+        temperature=0.7,
+    )
+
     for model_name in GEMINI_MODELS:
+
         try:
-            config = types.GenerateContentConfig(
-                system_instruction=system_prompt,
-                temperature=0.7,
+
+            logging.info(
+                "Trying Gemini model: %s",
+                model_name
             )
 
             response = await asyncio.to_thread(
@@ -334,315 +814,656 @@ async def ask_gemini(prompt, system_prompt=SYSTEM_PROMPT):
                 config=config,
             )
 
-            text = getattr(response, "text", None)
+            text = getattr(
+                response,
+                "text",
+                None
+            )
 
             if text:
+
+                logging.info(
+                    "Gemini success: %s",
+                    model_name
+                )
+
                 return text.strip()
 
+            last_error = (
+                f"{model_name}: Empty response"
+            )
+
+            logging.warning(
+                "Gemini returned empty response: %s",
+                model_name
+            )
+
         except Exception as e:
+
             last_error = e
+
             logging.warning(
                 "Gemini model failed %s: %s",
                 model_name,
                 e
             )
 
-    logging.warning(
+            continue
+
+    logging.error(
         "All Gemini models failed: %s",
         last_error
     )
 
     return (
-        "দুঃখিত 😔 এই মুহূর্তে AI সার্ভারে সমস্যা হচ্ছে। "
+        "দুঃখিত 😔\n\n"
+        "এই মুহূর্তে AI সার্ভারে সমস্যা হচ্ছে।\n"
         "কিছুক্ষণ পরে আবার চেষ্টা করুন।"
     )
 
-async def create_ai_post(text):
-    return await ask_gemini(text, POST_SYSTEM_PROMPT)
 
-# ========================= HELPERS ============================
+async def create_ai_post(text):
+
+    return await ask_gemini(
+        text,
+        POST_SYSTEM_PROMPT
+    )
+
+
+# ============================================================
+# HELPERS
+# ============================================================
 
 def parse_time(value):
+
     value = value.strip().upper()
 
-    for fmt in ("%H:%M", "%I:%M %p", "%I %p"):
+    for fmt in (
+        "%H:%M",
+        "%I:%M %p",
+        "%I %p"
+    ):
+
         try:
+
             return datetime.strptime(
                 value,
                 fmt
             ).strftime("%H:%M")
+
         except ValueError:
             pass
 
     return None
 
+
 def next_post_id():
+
     ids = []
 
-    for p in autopost_data.get("posts", []):
+    for p in autopost_data.get(
+        "posts",
+        []
+    ):
+
         try:
-            ids.append(int(p.get("id", 0)))
+
+            ids.append(
+                int(
+                    p.get(
+                        "id",
+                        0
+                    )
+                )
+            )
+
         except Exception:
             pass
 
-    return max(ids, default=0) + 1
+    return max(
+        ids,
+        default=0
+    ) + 1
+
 
 def renumber_posts():
+
     for i, post in enumerate(
-        autopost_data.get("posts", []),
+        autopost_data.get(
+            "posts",
+            []
+        ),
         1
     ):
+
         post["id"] = i
 
+
 def extract_group_post(text):
+
     if not text:
         return None
 
     patterns = [
+
         r"^গ্রুপে\s*পোস্ট\s*করো\s*[:：]\s*(.+)$",
+
         r"^গ্রুপে\s*পোস্ট\s*করুন\s*[:：]\s*(.+)$",
+
         r"^group\s*এ\s*পোস্ট\s*করো\s*[:：]\s*(.+)$",
+
         r"^group\s*post\s*[:：]\s*(.+)$",
+
         r"^post\s*to\s*group\s*[:：]\s*(.+)$",
+
     ]
 
     for pattern in patterns:
+
         m = re.search(
             pattern,
             text,
             re.I
         )
+
         if m:
+
             return m.group(1).strip()
 
     return None
 
-# ========================= CHAT / DESTINATION MANAGER =========================
 
-async def resolve_chat_reference(context, reference):
-    """
-    Resolve a Telegram Group/Supergroup/Channel from:
-      • @username
-      • username
-      • numeric chat ID
-      • t.me/username
+# ============================================================
+# BOT RESOLVER
+# ============================================================
+# This fixes the Application vs Context problem.
+# Functions can now receive:
+#   ContextTypes.DEFAULT_TYPE
+#   Application
+#   Bot
+# ============================================================
 
-    NOTE:
-    Bot API can only access a target chat when Telegram allows the bot
-    to resolve/access it. For private chats, use a forwarded message
-    from that chat (see /addgroup reply mode).
-    """
-    reference = (reference or "").strip()
+def get_bot(obj):
+
+    if obj is None:
+        return None
+
+    # Application
+    bot = getattr(
+        obj,
+        "bot",
+        None
+    )
+
+    if bot is not None:
+        return bot
+
+    # Context
+    bot = getattr(
+        getattr(
+            obj,
+            "application",
+            None
+        ),
+        "bot",
+        None
+    )
+
+    if bot is not None:
+        return bot
+
+    # Already a Bot object
+    if hasattr(
+        obj,
+        "send_message"
+    ):
+
+        return obj
+
+    return None
+
+
+# ============================================================
+# CHAT / DESTINATION MANAGER
+# ============================================================
+
+async def resolve_chat_reference(
+    context,
+    reference
+):
+
+    reference = (
+        reference or ""
+    ).strip()
 
     if not reference:
-        return None, "❌ Group/Channel username বা Chat ID দিন।"
 
-    reference = re.sub(r"^https?://t\.me/", "", reference, flags=re.I).strip("/")
-    reference = reference.split("?", 1)[0]
-
-    try:
-        if re.fullmatch(r"-?\d+", reference):
-            return await context.bot.get_chat(int(reference)), None
-
-        username = reference.lstrip("@").strip()
-        if not username:
-            return None, "❌ Username সঠিক নয়।"
-
-        return await context.bot.get_chat("@" + username), None
-
-    except Exception as e:
-        logging.warning("Could not resolve chat %s: %s", reference, e)
-        return None, (
-            "❌ Telegram এই Group/Channel-টি resolve করতে পারেনি।\n\n"
-            f"🔎 Target: {reference}\n\n"
-            "এভাবে চেষ্টা করুন:\n"
-            "1️⃣ Bot-কে target Group/Channel-এ আগে Add করুন।\n"
-            "2️⃣ Channel হলে Bot-কে Admin + Post Messages permission দিন।\n"
-            "3️⃣ Public username ঠিক আছে কিনা দেখুন।\n"
-            "4️⃣ Private chat হলে target chat-এর একটি message Bot-কে Forward করে "
-            "সেই message-এর reply হিসেবে `/addgroup` দিন।"
+        return (
+            None,
+            "❌ Group/Channel username বা Chat ID দিন।"
         )
 
-def get_forwarded_chat_from_message(message):
-    """Return the source chat object from a forwarded Telegram message."""
+    reference = re.sub(
+        r"^https?://t\.me/",
+        "",
+        reference,
+        flags=re.I
+    ).strip("/")
+
+    reference = reference.split(
+        "?",
+        1
+    )[0]
+
+    bot = get_bot(context)
+
+    if bot is None:
+
+        return (
+            None,
+            "❌ Telegram Bot পাওয়া যায়নি।"
+        )
+
+    try:
+
+        if re.fullmatch(
+            r"-?\d+",
+            reference
+        ):
+
+            return (
+                await bot.get_chat(
+                    int(reference)
+                ),
+                None
+            )
+
+        username = (
+            reference
+            .lstrip("@")
+            .strip()
+        )
+
+        if not username:
+
+            return (
+                None,
+                "❌ Username সঠিক নয়।"
+            )
+
+        return (
+            await bot.get_chat(
+                "@" + username
+            ),
+            None
+        )
+
+    except Exception as e:
+
+        logging.warning(
+            "Could not resolve chat %s: %s",
+            reference,
+            e
+        )
+
+        return (
+            None,
+            (
+                "❌ Telegram এই Group/Channel-টি "
+                "resolve করতে পারেনি।\n\n"
+                f"🔎 Target: {reference}\n\n"
+                "এভাবে চেষ্টা করুন:\n"
+                "1️⃣ Bot-কে target Group/Channel-এ Add করুন।\n"
+                "2️⃣ Channel হলে Bot-কে Admin + Post Messages permission দিন।\n"
+                "3️⃣ Public username ঠিক আছে কিনা দেখুন।\n"
+                "4️⃣ Private chat হলে target chat-এর একটি message "
+                "Bot-কে Forward করে সেই message-এর reply হিসেবে "
+                "`/addgroup` দিন।"
+            )
+        )
+
+
+def get_forwarded_chat_from_message(
+    message
+):
+
     if not message:
         return None
 
-    origin = getattr(message, "forward_origin", None)
+    origin = getattr(
+        message,
+        "forward_origin",
+        None
+    )
+
     if origin:
-        # python-telegram-bot MessageOriginChat / MessageOriginChannel
-        sender_chat = getattr(origin, "sender_chat", None)
+
+        sender_chat = getattr(
+            origin,
+            "sender_chat",
+            None
+        )
+
         if sender_chat:
             return sender_chat
 
-        chat = getattr(origin, "chat", None)
+        chat = getattr(
+            origin,
+            "chat",
+            None
+        )
+
         if chat:
             return chat
 
-    # Older PTB compatibility
-    forward_from_chat = getattr(message, "forward_from_chat", None)
+    forward_from_chat = getattr(
+        message,
+        "forward_from_chat",
+        None
+    )
+
     if forward_from_chat:
         return forward_from_chat
 
     return None
 
-async def resolve_add_target_from_reply(update, context):
-    """
-    If /addgroup or /addchannel is sent as a reply to a forwarded message,
-    use the original source chat as the target.
-    """
+
+async def resolve_add_target_from_reply(
+    update,
+    context
+):
+
     message = update.effective_message
+
     if not message:
         return None
 
-    reply = getattr(message, "reply_to_message", None)
+    reply = getattr(
+        message,
+        "reply_to_message",
+        None
+    )
+
     if not reply:
         return None
 
-    source_chat = get_forwarded_chat_from_message(reply)
+    source_chat = (
+        get_forwarded_chat_from_message(
+            reply
+        )
+    )
+
     if source_chat:
         return source_chat
 
-    # If the owner simply replies to a message that belongs to a group,
-    # use that chat when it is not a private chat.
-    reply_chat = getattr(reply, "chat", None)
-    if reply_chat and getattr(reply_chat, "type", None) in ("group", "supergroup", "channel"):
+    reply_chat = getattr(
+        reply,
+        "chat",
+        None
+    )
+
+    if (
+        reply_chat
+        and getattr(
+            reply_chat,
+            "type",
+            None
+        )
+        in (
+            "group",
+            "supergroup",
+            "channel"
+        )
+    ):
+
         return reply_chat
 
     return None
 
-async def check_chat_permissions(context, chat):
-    """
-    Verify that the bot is in the target chat and can post.
-    """
+
+async def check_chat_permissions(
+    context,
+    chat
+):
+
+    bot = get_bot(context)
+
+    if bot is None:
+
+        return (
+            False,
+            "❌ Telegram Bot পাওয়া যায়নি।"
+        )
 
     try:
-        me = await context.bot.get_me()
 
-        member = await context.bot.get_chat_member(
+        me = await bot.get_me()
+
+        member = await bot.get_chat_member(
             chat_id=chat.id,
             user_id=me.id
         )
 
-        if member.status in ("left", "kicked"):
-            return False, (
-                "❌ Bot এই Group/Channel-এর member নয়।\n\n"
+        if member.status in (
+            "left",
+            "kicked"
+        ):
+
+            return (
+                False,
+                "❌ Bot এই Group/Channel-এর member নয়.\n\n"
                 "আগে Bot-কে target chat-এ যোগ করুন।"
             )
 
         if chat.type == "channel":
+
             if member.status != "administrator":
-                return False, (
-                    "❌ Channel-এ Bot Admin নয়।\n\n"
+
+                return (
+                    False,
+                    "❌ Channel-এ Bot Admin নয়.\n\n"
                     "Bot-কে Channel Admin করুন এবং "
                     "Post Messages permission দিন।"
                 )
 
-            if hasattr(member, "can_post_messages"):
-                if member.can_post_messages is False:
-                    return False, (
+            if hasattr(
+                member,
+                "can_post_messages"
+            ):
+
+                if (
+                    member.can_post_messages
+                    is False
+                ):
+
+                    return (
+                        False,
                         "❌ Bot Admin হলেও Channel-এ "
                         "Post Messages permission নেই।"
                     )
 
-            return True, None
+            return (
+                True,
+                None
+            )
 
-        if chat.type in ("group", "supergroup"):
-            if member.status in ("administrator", "creator"):
-                return True, None
+        if chat.type in (
+            "group",
+            "supergroup"
+        ):
+
+            if member.status in (
+                "administrator",
+                "creator"
+            ):
+
+                return (
+                    True,
+                    None
+                )
 
             if member.status == "member":
-                return True, None
 
-            return False, (
+                return (
+                    True,
+                    None
+                )
+
+            return (
+                False,
                 "❌ Bot-এর Group permission যাচাই করা যায়নি।"
             )
 
-        return False, (
+        return (
+            False,
             f"❌ Unsupported chat type: {chat.type}"
         )
 
     except Exception as e:
+
         logging.warning(
             "Permission check failed: %s",
             e
         )
 
-        return False, (
-            "⚠️ Permission যাচাই করা যায়নি।\n\n"
+        return (
+            False,
+            "⚠️ Permission যাচাই করা যায়নি.\n\n"
             "Bot-কে Group/Channel-এ যোগ করে আবার চেষ্টা করুন।"
         )
 
-async def add_chat_destination(update, context):
-    """
-    Supported:
-      /addgroup
-      /addgroup @username
-      /addchannel @username
-      /addchat @username
 
-    With no argument, current group/channel is used.
-    With username/ID, Inbox can manage a known target chat.
-    """
+# ============================================================
+# ADD DESTINATION
+# ============================================================
 
-    if not await require_owner(update):
+async def add_chat_destination(
+    update,
+    context
+):
+
+    if not await require_owner(
+        update
+    ):
         return
 
     message = update.effective_message
     current_chat = update.effective_chat
     args = context.args
 
-    # 1) /addgroup @username, /addchannel @username, /addgroup -100...
+    # --------------------------------
+    # Explicit target
+    # --------------------------------
+
     if args:
-        chat, error = await resolve_chat_reference(context, args[0])
+
+        chat, error = (
+            await resolve_chat_reference(
+                context,
+                args[0]
+            )
+        )
+
         if error:
-            await message.reply_text(error_box(error))
+
+            await message.reply_text(
+                error_box(error)
+            )
+
             return
 
     else:
-        # 2) Inbox reply to a forwarded message
-        chat = await resolve_add_target_from_reply(update, context)
 
-        # 3) Command used inside the target chat
+        # Forward reply
+        chat = (
+            await resolve_add_target_from_reply(
+                update,
+                context
+            )
+        )
+
+        # Current chat
         if chat is None:
-            if not current_chat or current_chat.type not in ("group", "supergroup", "channel"):
+
+            if (
+                not current_chat
+                or current_chat.type
+                not in (
+                    "group",
+                    "supergroup",
+                    "channel"
+                )
+            ):
+
                 await message.reply_text(
                     error_box(
                         "বস, Inbox থেকে ব্যবহার করুন:\n\n"
                         "`/addgroup @username`\n"
                         "`/addchannel @username`\n\n"
-                        "অথবা target Group/Channel-এর একটি message "
-                        "Forward করে সেই message-এর reply হিসেবে `/addgroup` দিন।"
+                        "অথবা target Group/Channel-এর একটি "
+                        "message Forward করে সেই message-এর "
+                        "reply হিসেবে `/addgroup` দিন।"
                     )
                 )
+
                 return
+
             chat = current_chat
 
-    # Inbox থেকে explicit target দিলে আগে destination হিসেবে save করার
-    # অনুমতি দিন। Bot এখনো target chat-এ না থাকলেও @username/ID config-এ
-    # রাখা যাবে। তবে পোস্ট করার আগে Bot-কে target chat-এ থাকতে হবে।
-    explicit_target = bool(args) or bool(await resolve_add_target_from_reply(update, context))
-
-    allowed, permission_error = await check_chat_permissions(
-        context,
-        chat
+    explicit_target = (
+        bool(args)
+        or bool(
+            await resolve_add_target_from_reply(
+                update,
+                context
+            )
+        )
     )
 
-    if not allowed and not explicit_target:
-        await message.reply_text(error_box(permission_error))
+    allowed, permission_error = (
+        await check_chat_permissions(
+            context,
+            chat
+        )
+    )
+
+    if (
+        not allowed
+        and not explicit_target
+    ):
+
+        await message.reply_text(
+            error_box(
+                permission_error
+            )
+        )
+
         return
 
-    gid = str(chat.id)
+    gid = str(
+        chat.id
+    )
+
     normalize_storage()
+
     groups = autopost_data.setdefault(
         "groups",
         {}
     )
-    if not isinstance(groups, dict):
+
+    if not isinstance(
+        groups,
+        dict
+    ):
+
         groups = {}
-        autopost_data["groups"] = groups
+
+        autopost_data[
+            "groups"
+        ] = groups
 
     if gid in groups:
+
         old = groups[gid]
 
         await message.reply_text(
@@ -654,6 +1475,7 @@ async def add_chat_destination(update, context):
                 f"📡 Active: {'YES' if old.get('active', True) else 'NO'}"
             )
         )
+
         return
 
     username = getattr(
@@ -665,9 +1487,16 @@ async def add_chat_destination(update, context):
     groups[gid] = {
         "id": chat.id,
         "title": chat.title or "Unnamed",
-        "username": ("@" + username) if username else "",
+        "username": (
+            "@"
+            + username
+            if username
+            else ""
+        ),
         "type": chat.type,
-        "added_at": datetime.now(BD).isoformat(),
+        "added_at": datetime.now(
+            BD
+        ).isoformat(),
         "active": True,
     }
 
@@ -679,7 +1508,7 @@ async def add_chat_destination(update, context):
         "channel": "CHANNEL"
     }.get(
         chat.type,
-        chat.type.upper()
+        str(chat.type).upper()
     )
 
     username_text = (
@@ -689,17 +1518,21 @@ async def add_chat_destination(update, context):
     )
 
     if allowed:
+
         ready_text = (
             "🟢 Bot Access: READY\n"
             "🟢 Auto Post Ready\n"
             "🟢 Broadcast Ready\n"
             "🟢 AI Post Ready"
         )
+
     else:
+
         ready_text = (
             "🟡 Destination Saved\n"
             "⚠️ Bot Access: NOT READY\n\n"
-            "Target chat-এ Bot-কে Add/Admin করুন। তারপর `/test` দিয়ে পরীক্ষা করুন।"
+            "Target chat-এ Bot-কে Add/Admin করুন। "
+            "তারপর `/test` দিয়ে পরীক্ষা করুন।"
         )
 
     await message.reply_text(
@@ -714,26 +1547,52 @@ async def add_chat_destination(update, context):
         )
     )
 
-async def addgroup_command(update, context):
+
+async def addgroup_command(
+    update,
+    context
+):
+
     await add_chat_destination(
         update,
         context
     )
 
-async def addchannel_command(update, context):
+
+async def addchannel_command(
+    update,
+    context
+):
+
     await add_chat_destination(
         update,
         context
     )
 
-async def addchat_command(update, context):
+
+async def addchat_command(
+    update,
+    context
+):
+
     await add_chat_destination(
         update,
         context
     )
 
-async def groups_command(update, context):
-    if not await require_owner(update):
+
+# ============================================================
+# LIST DESTINATIONS
+# ============================================================
+
+async def groups_command(
+    update,
+    context
+):
+
+    if not await require_owner(
+        update
+    ):
         return
 
     groups = autopost_data.get(
@@ -742,13 +1601,15 @@ async def groups_command(update, context):
     )
 
     if not groups:
+
         await update.effective_message.reply_text(
             info_box(
-                "কোনো Group/Channel যুক্ত নেই।\n\n"
+                "কোনো Group/Channel যুক্ত নেই.\n\n"
                 "Inbox থেকে:\n"
                 "`/addgroup @username`"
             )
         )
+
         return
 
     lines = [
@@ -758,10 +1619,14 @@ async def groups_command(update, context):
         ""
     ]
 
-    for i, (gid, data) in enumerate(
+    for i, (
+        gid,
+        data
+    ) in enumerate(
         groups.items(),
         1
     ):
+
         active = data.get(
             "active",
             True
@@ -782,11 +1647,15 @@ async def groups_command(update, context):
         )
 
         lines.append(
-            f"{type_icon} {i}. {data.get('title', 'Unknown')}\n"
+            f"{type_icon} {i}. "
+            f"{data.get('title', 'Unknown')}\n"
             f"🆔 ID: {gid}\n"
-            f"📂 Type: {data.get('type', 'unknown').upper()}\n"
-            f"🔗 {username if username else 'No Username'}\n"
-            f"📡 Active: {'🟢 YES' if active else '🔴 NO'}"
+            f"📂 Type: "
+            f"{data.get('type', 'unknown').upper()}\n"
+            f"🔗 "
+            f"{username if username else 'No Username'}\n"
+            f"📡 Active: "
+            f"{'🟢 YES' if active else '🔴 NO'}"
         )
 
         lines.append(
@@ -799,23 +1668,23 @@ async def groups_command(update, context):
     )
 
     await update.effective_message.reply_text(
-        "\n".join(lines) + vip_footer()
+        "\n".join(lines)
+        + vip_footer()
     )
 
-async def remove_chat_destination(update, context):
-    """
-    Supported:
-      /delgroup @username
-      /delchannel @username
-      /removegroup @username
-      /removechannel @username
 
-    No argument:
-      /delgroup
-      removes current group/channel.
-    """
+# ============================================================
+# REMOVE DESTINATION
+# ============================================================
 
-    if not await require_owner(update):
+async def remove_chat_destination(
+    update,
+    context
+):
+
+    if not await require_owner(
+        update
+    ):
         return
 
     message = update.effective_message
@@ -828,23 +1697,25 @@ async def remove_chat_destination(update, context):
     )
 
     if not groups:
+
         await message.reply_text(
             info_box(
                 "কোনো Group/Channel তালিকায় নেই।"
             )
         )
+
         return
 
-    # Resolve target
     if args:
+
         reference = args[0]
 
-        # First try saved data so deletion can work
-        # even if the chat is no longer resolvable.
         found_id = None
+
         ref_lower = reference.lower()
 
         for gid, data in groups.items():
+
             saved_username = str(
                 data.get(
                     "username",
@@ -853,10 +1724,12 @@ async def remove_chat_destination(update, context):
             ).lower()
 
             if gid == reference:
+
                 found_id = gid
                 break
 
             if saved_username == ref_lower:
+
                 found_id = gid
                 break
 
@@ -864,55 +1737,74 @@ async def remove_chat_destination(update, context):
                 saved_username.lstrip("@")
                 == ref_lower.lstrip("@")
             ):
+
                 found_id = gid
                 break
 
         if found_id is not None:
+
             gid = found_id
+
             data = groups[gid]
 
         else:
-            chat, error = await resolve_chat_reference(
-                context,
-                reference
+
+            chat, error = (
+                await resolve_chat_reference(
+                    context,
+                    reference
+                )
             )
 
             if error:
+
                 await message.reply_text(
                     error_box(error)
                 )
+
                 return
 
-            gid = str(chat.id)
+            gid = str(
+                chat.id
+            )
 
             if gid not in groups:
+
                 await message.reply_text(
                     error_box(
                         "❌ এই Group/Channel বর্তমানে "
                         "তালিকায় নেই।"
                     )
                 )
+
                 return
 
             data = groups[gid]
 
     else:
+
         if not current_chat:
+
             await message.reply_text(
                 error_box(
                     "❌ Current chat পাওয়া যায়নি।"
                 )
             )
+
             return
 
-        gid = str(current_chat.id)
+        gid = str(
+            current_chat.id
+        )
 
         if gid not in groups:
+
             await message.reply_text(
                 error_box(
                     "❌ এই Group/Channel তালিকায় নেই।"
                 )
             )
+
             return
 
         data = groups[gid]
@@ -943,46 +1835,90 @@ async def remove_chat_destination(update, context):
         )
     )
 
-async def delgroup_command(update, context):
+
+async def delgroup_command(
+    update,
+    context
+):
+
     await remove_chat_destination(
         update,
         context
     )
 
-async def delchannel_command(update, context):
+
+async def delchannel_command(
+    update,
+    context
+):
+
     await remove_chat_destination(
         update,
         context
     )
 
-async def removegroup_command(update, context):
+
+async def removegroup_command(
+    update,
+    context
+):
+
     await remove_chat_destination(
         update,
         context
     )
 
-async def removechannel_command(update, context):
+
+async def removechannel_command(
+    update,
+    context
+):
+
     await remove_chat_destination(
         update,
         context
     )
 
-# ========================= SEND ===============================
+
+# ============================================================
+# SEND TO GROUPS
+# ============================================================
 
 async def send_to_groups(
-    context,
+    context_or_bot,
     text,
     exclude_chat_id=None
 ):
+
+    bot = get_bot(
+        context_or_bot
+    )
+
+    if bot is None:
+
+        logging.error(
+            "send_to_groups: Bot unavailable"
+        )
+
+        return 0, len(
+            autopost_data.get(
+                "groups",
+                {}
+            )
+        )
+
     sent = 0
     failed = 0
 
+    groups = autopost_data.get(
+        "groups",
+        {}
+    )
+
     for gid, data in list(
-        autopost_data.get(
-            "groups",
-            {}
-        ).items()
+        groups.items()
     ):
+
         if not data.get(
             "active",
             True
@@ -990,6 +1926,7 @@ async def send_to_groups(
             continue
 
         try:
+
             cid = int(gid)
 
             if (
@@ -998,7 +1935,7 @@ async def send_to_groups(
             ):
                 continue
 
-            await context.bot.send_message(
+            await bot.send_message(
                 chat_id=cid,
                 text=text
             )
@@ -1006,6 +1943,7 @@ async def send_to_groups(
             sent += 1
 
         except Exception as e:
+
             failed += 1
 
             logging.warning(
@@ -1016,20 +1954,42 @@ async def send_to_groups(
 
     return sent, failed
 
+
 async def send_photo_to_groups(
-    context,
+    context_or_bot,
     photo_file_id,
     caption=""
 ):
+
+    bot = get_bot(
+        context_or_bot
+    )
+
+    if bot is None:
+
+        logging.error(
+            "send_photo_to_groups: Bot unavailable"
+        )
+
+        return 0, len(
+            autopost_data.get(
+                "groups",
+                {}
+            )
+        )
+
     sent = 0
     failed = 0
 
+    groups = autopost_data.get(
+        "groups",
+        {}
+    )
+
     for gid, data in list(
-        autopost_data.get(
-            "groups",
-            {}
-        ).items()
+        groups.items()
     ):
+
         if not data.get(
             "active",
             True
@@ -1037,15 +1997,21 @@ async def send_photo_to_groups(
             continue
 
         try:
-            await context.bot.send_photo(
+
+            await bot.send_photo(
                 chat_id=int(gid),
                 photo=photo_file_id,
-                caption=caption[:1024]
+                caption=(
+                    caption[:1024]
+                    if caption
+                    else ""
+                )
             )
 
             sent += 1
 
         except Exception as e:
+
             failed += 1
 
             logging.warning(
@@ -1056,15 +2022,25 @@ async def send_photo_to_groups(
 
     return sent, failed
 
-# ========================= SMS CONTROL ========================
 
-async def smson_command(update, context):
+# ============================================================
+# SMS CONTROL
+# ============================================================
+
+async def smson_command(
+    update,
+    context
+):
+
     global OWNER_SMS_TO_GROUP
 
-    if not await require_owner(update):
+    if not await require_owner(
+        update
+    ):
         return
 
     OWNER_SMS_TO_GROUP = True
+
     save_all()
 
     await update.effective_message.reply_text(
@@ -1076,13 +2052,21 @@ async def smson_command(update, context):
         )
     )
 
-async def smsoff_command(update, context):
+
+async def smsoff_command(
+    update,
+    context
+):
+
     global OWNER_SMS_TO_GROUP
 
-    if not await require_owner(update):
+    if not await require_owner(
+        update
+    ):
         return
 
     OWNER_SMS_TO_GROUP = False
+
     save_all()
 
     await update.effective_message.reply_text(
@@ -1093,8 +2077,15 @@ async def smsoff_command(update, context):
         )
     )
 
-async def smsstatus_command(update, context):
-    if not await require_owner(update):
+
+async def smsstatus_command(
+    update,
+    context
+):
+
+    if not await require_owner(
+        update
+    ):
         return
 
     lines = [
@@ -1109,6 +2100,7 @@ async def smsstatus_command(update, context):
     ]
 
     if USER_SMS_TO_GROUP:
+
         lines += [""] + [
             f"👤 {uid} → "
             + (
@@ -1119,37 +2111,51 @@ async def smsstatus_command(update, context):
             for uid, enabled
             in USER_SMS_TO_GROUP.items()
         ]
+
     else:
+
         lines.append(
             "ℹ️ কোনো User SMS control নেই।"
         )
 
     await update.effective_message.reply_text(
-        "\n".join(lines) + vip_footer()
+        "\n".join(lines)
+        + vip_footer()
     )
 
-# ========================= NATURAL OWNER CONTROL ==============
+
+# ============================================================
+# OWNER NATURAL CONTROL
+# ============================================================
 
 async def owner_text_control(
     update,
     context,
     text
 ):
-    global OWNER_SMS_TO_GROUP, USER_SMS_TO_GROUP
+
+    global OWNER_SMS_TO_GROUP
+    global USER_SMS_TO_GROUP
 
     raw = text.strip()
+
     low = raw.lower()
 
-    explicit = extract_group_post(raw)
+    explicit = extract_group_post(
+        raw
+    )
 
     if explicit:
+
         ai_post = await create_ai_post(
             explicit
         )
 
-        sent, failed = await send_to_groups(
-            context,
-            ai_post
+        sent, failed = (
+            await send_to_groups(
+                context,
+                ai_post
+            )
         )
 
         await update.effective_message.reply_text(
@@ -1163,25 +2169,33 @@ async def owner_text_control(
         return True
 
     on_phrases = {
+
         "owner sms to group on",
         "sms to group on",
         "sms group on",
         "owner group sms on",
+
         "ওনার sms to group on",
         "ওনার এসএমএস টু গ্রুপ অন",
+
     }
 
     off_phrases = {
+
         "owner sms to group off",
         "sms to group off",
         "sms group off",
         "owner group sms off",
+
         "ওনার sms to group off",
         "ওনার এসএমএস টু গ্রুপ অফ",
+
     }
 
     if low in on_phrases:
+
         OWNER_SMS_TO_GROUP = True
+
         save_all()
 
         await update.effective_message.reply_text(
@@ -1193,7 +2207,9 @@ async def owner_text_control(
         return True
 
     if low in off_phrases:
+
         OWNER_SMS_TO_GROUP = False
+
         save_all()
 
         await update.effective_message.reply_text(
@@ -1205,11 +2221,14 @@ async def owner_text_control(
         return True
 
     if low in {
+
         "owner sms status",
         "sms to group status",
         "sms status",
         "ওনার এসএমএস স্ট্যাটাস",
+
     }:
+
         await smsstatus_command(
             update,
             context
@@ -1223,18 +2242,24 @@ async def owner_text_control(
     )
 
     if m:
+
         uid = m.group(1)
+
         action = m.group(2)
 
         if int(uid) <= 0:
+
             await update.effective_message.reply_text(
                 owner_reply(
                     "❌ Positive personal User ID দিন।"
                 )
             )
+
             return True
 
-        USER_SMS_TO_GROUP[uid] = (
+        USER_SMS_TO_GROUP[
+            uid
+        ] = (
             action == "on"
         )
 
@@ -1260,6 +2285,7 @@ async def owner_text_control(
     )
 
     if m:
+
         uid = m.group(1)
 
         enabled = USER_SMS_TO_GROUP.get(
@@ -1282,12 +2308,18 @@ async def owner_text_control(
         return True
 
     if low in {
+
         "auto post on",
         "autopost on",
         "অটো পোস্ট অন",
         "অটোপোস্ট অন",
+
     }:
-        autopost_data["enabled"] = True
+
+        autopost_data[
+            "enabled"
+        ] = True
+
         save_all()
 
         await update.effective_message.reply_text(
@@ -1299,12 +2331,18 @@ async def owner_text_control(
         return True
 
     if low in {
+
         "auto post off",
         "autopost off",
         "অটো পোস্ট অফ",
         "অটোপোস্ট অফ",
+
     }:
-        autopost_data["enabled"] = False
+
+        autopost_data[
+            "enabled"
+        ] = False
+
         save_all()
 
         await update.effective_message.reply_text(
@@ -1316,15 +2354,19 @@ async def owner_text_control(
         return True
 
     if low in {
+
         "group add",
         "add group",
         "গ্রুপ যোগ করো",
         "গ্রুপ অ্যাড করো",
+
     }:
+
         await add_chat_destination(
             update,
             context
         )
+
         return True
 
     m = re.match(
@@ -1336,16 +2378,19 @@ async def owner_text_control(
     )
 
     if m:
+
         t = parse_time(
             m.group(1)
         )
 
         if not t:
+
             await update.effective_message.reply_text(
                 owner_reply(
                     "⏰ সময় সঠিক নয়।"
                 )
             )
+
             return True
 
         post = {
@@ -1360,7 +2405,9 @@ async def owner_text_control(
         autopost_data.setdefault(
             "posts",
             []
-        ).append(post)
+        ).append(
+            post
+        )
 
         save_all()
 
@@ -1377,13 +2424,25 @@ async def owner_text_control(
 
     return False
 
-# ========================= AUTO POST =========================
 
-async def on_command(update, context):
-    if not await require_owner(update):
+# ============================================================
+# AUTO POST CONTROL
+# ============================================================
+
+async def on_command(
+    update,
+    context
+):
+
+    if not await require_owner(
+        update
+    ):
         return
 
-    autopost_data["enabled"] = True
+    autopost_data[
+        "enabled"
+    ] = True
+
     save_all()
 
     await update.effective_message.reply_text(
@@ -1392,11 +2451,21 @@ async def on_command(update, context):
         )
     )
 
-async def off_command(update, context):
-    if not await require_owner(update):
+
+async def off_command(
+    update,
+    context
+):
+
+    if not await require_owner(
+        update
+    ):
         return
 
-    autopost_data["enabled"] = False
+    autopost_data[
+        "enabled"
+    ] = False
+
     save_all()
 
     await update.effective_message.reply_text(
@@ -1405,8 +2474,15 @@ async def off_command(update, context):
         )
     )
 
-async def status_command(update, context):
-    if not await require_owner(update):
+
+async def status_command(
+    update,
+    context
+):
+
+    if not await require_owner(
+        update
+    ):
         return
 
     groups = autopost_data.get(
@@ -1418,9 +2494,15 @@ async def status_command(update, context):
     channel_count = 0
 
     for data in groups.values():
-        if data.get("type") == "channel":
+
+        if data.get(
+            "type"
+        ) == "channel":
+
             channel_count += 1
+
         else:
+
             group_count += 1
 
     await update.effective_message.reply_text(
@@ -1429,7 +2511,8 @@ async def status_command(update, context):
             f"📡 Total Destinations: {len(groups)}\n"
             f"👥 Groups: {group_count}\n"
             f"📢 Channels: {channel_count}\n"
-            f"📝 Posts: {len(autopost_data.get('posts', []))}\n"
+            f"📝 Posts: "
+            f"{len(autopost_data.get('posts', []))}\n"
             "⏰ Auto Post: "
             + (
                 "🟢 ON"
@@ -1446,21 +2529,38 @@ async def status_command(update, context):
                 else "🔴 OFF"
             )
             + "\n"
-            f"👤 Controlled Users: {len(USER_SMS_TO_GROUP)}"
+            f"👤 Controlled Users: "
+            f"{len(USER_SMS_TO_GROUP)}"
         )
     )
 
-async def addpost_command(update, context):
-    if not await require_owner(update):
+
+# ============================================================
+# ADD SCHEDULED POST
+# ============================================================
+
+async def addpost_command(
+    update,
+    context
+):
+
+    if not await require_owner(
+        update
+    ):
         return
 
-    raw = update.effective_message.text or ""
+    raw = (
+        update.effective_message.text
+        or ""
+    )
+
     parts = raw.split(
         " ",
         1
     )
 
     if len(parts) < 2:
+
         await update.effective_message.reply_text(
             owner_reply(
                 "ব্যবহার:\n"
@@ -1468,6 +2568,7 @@ async def addpost_command(update, context):
                 "`/addpost 08:30 PM | Good Night`"
             )
         )
+
         return
 
     m = re.match(
@@ -1478,12 +2579,14 @@ async def addpost_command(update, context):
     )
 
     if not m:
+
         await update.effective_message.reply_text(
             error_box(
                 "Format ভুল। "
                 "`/addpost 08:00 | আপনার বার্তা`"
             )
         )
+
         return
 
     t = parse_time(
@@ -1491,11 +2594,13 @@ async def addpost_command(update, context):
     )
 
     if not t:
+
         await update.effective_message.reply_text(
             error_box(
                 "সময় সঠিক নয়।"
             )
         )
+
         return
 
     post = {
@@ -1510,7 +2615,9 @@ async def addpost_command(update, context):
     autopost_data.setdefault(
         "posts",
         []
-    ).append(post)
+    ).append(
+        post
+    )
 
     save_all()
 
@@ -1523,8 +2630,19 @@ async def addpost_command(update, context):
         )
     )
 
-async def list_command(update, context):
-    if not await require_owner(update):
+
+# ============================================================
+# POST LIST
+# ============================================================
+
+async def list_command(
+    update,
+    context
+):
+
+    if not await require_owner(
+        update
+    ):
         return
 
     posts = autopost_data.get(
@@ -1533,11 +2651,13 @@ async def list_command(update, context):
     )
 
     if not posts:
+
         await update.effective_message.reply_text(
             info_box(
                 "কোনো Scheduled Post নেই।"
             )
         )
+
         return
 
     lines = [
@@ -1548,13 +2668,16 @@ async def list_command(update, context):
     ]
 
     for p in posts:
+
         lines.append(
             f"🆔 ID: {p.get('id')}\n"
             f"🕐 Time: {p.get('post_time')}\n"
             "📦 Type: "
             + (
                 "📸 PHOTO"
-                if p.get("photo_file_id")
+                if p.get(
+                    "photo_file_id"
+                )
                 else "📝 TEXT"
             )
             + "\n"
@@ -1576,28 +2699,45 @@ async def list_command(update, context):
         "\n".join(lines)
     )
 
-async def delete_command(update, context):
-    if not await require_owner(update):
+
+# ============================================================
+# DELETE POST
+# ============================================================
+
+async def delete_command(
+    update,
+    context
+):
+
+    if not await require_owner(
+        update
+    ):
         return
 
     if not context.args:
+
         await update.effective_message.reply_text(
             owner_reply(
                 "ব্যবহার: `/delete POST_ID`"
             )
         )
+
         return
 
     try:
+
         pid = int(
             context.args[0]
         )
+
     except ValueError:
+
         await update.effective_message.reply_text(
             error_box(
                 "Post ID সঠিক নয়।"
             )
         )
+
         return
 
     posts = autopost_data.get(
@@ -1606,7 +2746,8 @@ async def delete_command(update, context):
     )
 
     new_posts = [
-        p for p in posts
+        p
+        for p in posts
         if int(
             p.get(
                 "id",
@@ -1615,16 +2756,24 @@ async def delete_command(update, context):
         ) != pid
     ]
 
-    if len(new_posts) == len(posts):
+    if len(new_posts) == len(
+        posts
+    ):
+
         await update.effective_message.reply_text(
             error_box(
                 f"Post ID {pid} পাওয়া যায়নি।"
             )
         )
+
         return
 
-    autopost_data["posts"] = new_posts
+    autopost_data[
+        "posts"
+    ] = new_posts
+
     renumber_posts()
+
     save_all()
 
     await update.effective_message.reply_text(
@@ -1633,11 +2782,25 @@ async def delete_command(update, context):
         )
     )
 
-async def clear_command(update, context):
-    if not await require_owner(update):
+
+# ============================================================
+# CLEAR POSTS
+# ============================================================
+
+async def clear_command(
+    update,
+    context
+):
+
+    if not await require_owner(
+        update
+    ):
         return
 
-    autopost_data["posts"] = []
+    autopost_data[
+        "posts"
+    ] = []
+
     save_all()
 
     await update.effective_message.reply_text(
@@ -1646,32 +2809,48 @@ async def clear_command(update, context):
         )
     )
 
-async def post_command(update, context):
-    if not await require_owner(update):
+
+# ============================================================
+# AI POST
+# ============================================================
+
+async def post_command(
+    update,
+    context
+):
+
+    if not await require_owner(
+        update
+    ):
         return
 
     raw = (
-        update.effective_message.text or ""
+        update.effective_message.text
+        or ""
     ).split(
         " ",
         1
     )
 
     if len(raw) < 2:
+
         await update.effective_message.reply_text(
             owner_reply(
                 "ব্যবহার: `/post আপনার বার্তা`"
             )
         )
+
         return
 
     ai_post = await create_ai_post(
         raw[1].strip()
     )
 
-    sent, failed = await send_to_groups(
-        context,
-        ai_post
+    sent, failed = (
+        await send_to_groups(
+            context,
+            ai_post
+        )
     )
 
     await update.effective_message.reply_text(
@@ -1682,28 +2861,44 @@ async def post_command(update, context):
         )
     )
 
-async def broadcast_command(update, context):
-    if not await require_owner(update):
+
+# ============================================================
+# BROADCAST
+# ============================================================
+
+async def broadcast_command(
+    update,
+    context
+):
+
+    if not await require_owner(
+        update
+    ):
         return
 
     raw = (
-        update.effective_message.text or ""
+        update.effective_message.text
+        or ""
     ).split(
         " ",
         1
     )
 
     if len(raw) < 2:
+
         await update.effective_message.reply_text(
             owner_reply(
                 "ব্যবহার: `/broadcast আপনার বার্তা`"
             )
         )
+
         return
 
-    sent, failed = await send_to_groups(
-        context,
-        raw[1].strip()
+    sent, failed = (
+        await send_to_groups(
+            context,
+            raw[1].strip()
+        )
     )
 
     await update.effective_message.reply_text(
@@ -1714,8 +2909,19 @@ async def broadcast_command(update, context):
         )
     )
 
-async def test_command(update, context):
-    if not await require_owner(update):
+
+# ============================================================
+# TEST
+# ============================================================
+
+async def test_command(
+    update,
+    context
+):
+
+    if not await require_owner(
+        update
+    ):
         return
 
     text = (
@@ -1727,9 +2933,11 @@ async def test_command(update, context):
         "🇧🇩 Bangladesh Time System Active."
     )
 
-    sent, failed = await send_to_groups(
-        context,
-        text
+    sent, failed = (
+        await send_to_groups(
+            context,
+            text
+        )
     )
 
     await update.effective_message.reply_text(
@@ -1740,18 +2948,31 @@ async def test_command(update, context):
         )
     )
 
-async def autopost_worker(application):
+
+# ============================================================
+# AUTO POST WORKER
+# ============================================================
+
+async def autopost_worker(
+    application
+):
+
     logging.info(
         "Auto-post worker started."
     )
 
     while True:
+
         try:
+
             if autopost_data.get(
                 "enabled",
                 True
             ):
-                now = datetime.now(BD)
+
+                now = datetime.now(
+                    BD
+                )
 
                 current_time = now.strftime(
                     "%H:%M"
@@ -1767,6 +2988,7 @@ async def autopost_worker(application):
                     "posts",
                     []
                 ):
+
                     if not post.get(
                         "enabled",
                         True
@@ -1794,51 +3016,86 @@ async def autopost_worker(application):
                         ""
                     )
 
+                    # FIX:
+                    # Use application.bot through get_bot()
+                    # so Application/Context mismatch cannot happen.
+
                     if photo_id:
+
                         await send_photo_to_groups(
                             application,
                             photo_id,
                             post_text
                         )
+
                     else:
+
                         await send_to_groups(
                             application,
                             post_text
                         )
 
-                    post["last_run_date"] = today
+                    post[
+                        "last_run_date"
+                    ] = today
+
                     changed = True
 
                 if changed:
+
                     save_all()
 
         except Exception:
+
             logging.exception(
                 "Auto worker error"
             )
 
-        await asyncio.sleep(20)
+        await asyncio.sleep(
+            20
+        )
 
-# ========================= PHOTO ==============================
 
-async def photo_handler(update, context):
+# ============================================================
+# PHOTO HANDLER
+# ============================================================
+
+async def photo_handler(
+    update,
+    context
+):
+
     message = update.effective_message
+
     user = update.effective_user
 
     if not message or not user:
         return
 
-    register_user(user)
+    register_user(
+        user
+    )
+
     save_all()
 
     caption = (
         message.caption or ""
     ).strip()
 
-    photo_id = message.photo[-1].file_id
+    if not message.photo:
+        return
+
+    photo_id = (
+        message.photo[-1].file_id
+    )
+
+    # ========================================================
+    # OWNER
+    # ========================================================
 
     if is_owner(user):
 
+        # Scheduled Photo
         m = re.match(
             r"^([0-9]{1,2}:[0-9]{2}(?:\s*[AP]M)?)"
             r"\s*\|\s*(.*)$",
@@ -1847,11 +3104,13 @@ async def photo_handler(update, context):
         )
 
         if m:
+
             t = parse_time(
                 m.group(1)
             )
 
             if t:
+
                 post = {
                     "id": next_post_id(),
                     "post_time": t,
@@ -1864,7 +3123,9 @@ async def photo_handler(update, context):
                 autopost_data.setdefault(
                     "posts",
                     []
-                ).append(post)
+                ).append(
+                    post
+                )
 
                 save_all()
 
@@ -1879,19 +3140,23 @@ async def photo_handler(update, context):
 
                 return
 
+        # Explicit Group Post
         explicit = extract_group_post(
             caption
         )
 
         if explicit:
+
             ai_caption = await create_ai_post(
                 explicit
             )
 
-            sent, failed = await send_photo_to_groups(
-                context,
-                photo_id,
-                ai_caption
+            sent, failed = (
+                await send_photo_to_groups(
+                    context,
+                    photo_id,
+                    ai_caption
+                )
             )
 
             await message.reply_text(
@@ -1904,7 +3169,9 @@ async def photo_handler(update, context):
 
             return
 
+        # SMS → Group
         if OWNER_SMS_TO_GROUP:
+
             base = (
                 caption
                 or
@@ -1915,10 +3182,12 @@ async def photo_handler(update, context):
                 base
             )
 
-            sent, failed = await send_photo_to_groups(
-                context,
-                photo_id,
-                ai_caption
+            sent, failed = (
+                await send_photo_to_groups(
+                    context,
+                    photo_id,
+                    ai_caption
+                )
             )
 
             await message.reply_text(
@@ -1941,73 +3210,119 @@ async def photo_handler(update, context):
 
         return
 
-    uid = str(user.id)
+    # ========================================================
+    # NORMAL USER
+    # ========================================================
+
+    uid = str(
+        user.id
+    )
 
     if USER_SMS_TO_GROUP.get(
         uid,
         False
     ):
+
         ai_caption = await create_ai_post(
-            caption or "একটি নতুন Photo Post"
+            caption
+            or
+            "একটি নতুন Photo Post"
         )
 
-        sent, failed = await send_photo_to_groups(
-            context,
-            photo_id,
-            ai_caption
+        sent, failed = (
+            await send_photo_to_groups(
+                context,
+                photo_id,
+                ai_caption
+            )
         )
 
         await message.reply_text(
-            "📸 Premium Photo Post তৈরি হয়েছে।\n\n"
+            "📸 Premium Photo Post তৈরি হয়েছে.\n\n"
             f"📢 Group/Channel Sent: {sent}"
         )
 
     else:
+
         await message.reply_text(
             "📸 Photo received successfully."
         )
 
-# ========================= USER SEND ==========================
 
-async def sendmsg_command(update, context):
-    if not await require_owner(update):
+# ============================================================
+# SEND MESSAGE TO USER
+# ============================================================
+
+async def sendmsg_command(
+    update,
+    context
+):
+
+    if not await require_owner(
+        update
+    ):
         return
 
     parts = (
-        update.effective_message.text or ""
+        update.effective_message.text
+        or ""
     ).split(
         " ",
         2
     )
 
     if len(parts) < 3:
+
         await update.effective_message.reply_text(
             owner_reply(
                 "ব্যবহার: `/sendmsg USER_ID আপনার বার্তা`"
             )
         )
+
         return
 
     target = parts[1].strip()
+
     send_text = parts[2].strip()
 
-    data = USER_REGISTRY.get(
+    lookup_key = (
         target.lower()
         if target.startswith("@")
         else target
     )
 
+    data = USER_REGISTRY.get(
+        lookup_key
+    )
+
     if not data:
+
         await update.effective_message.reply_text(
             owner_reply(
                 "❌ User আগে Bot-এ `/start` দেয়নি "
                 "বা Registry-তে নেই।"
             )
         )
+
+        return
+
+    bot = get_bot(
+        context
+    )
+
+    if bot is None:
+
+        await update.effective_message.reply_text(
+            error_box(
+                "Telegram Bot পাওয়া যায়নি।"
+            )
+        )
+
         return
 
     try:
-        await context.bot.send_message(
+
+        await bot.send_message(
             chat_id=int(
                 data["user_id"]
             ),
@@ -2022,6 +3337,7 @@ async def sendmsg_command(update, context):
         )
 
     except Exception:
+
         logging.exception(
             "sendmsg failed"
         )
@@ -2033,22 +3349,32 @@ async def sendmsg_command(update, context):
             )
         )
 
-# ========================= TRANSLATION ========================
 
-async def translate_command(update, context):
+# ============================================================
+# TRANSLATION
+# ============================================================
+
+async def translate_command(
+    update,
+    context
+):
+
     parts = (
-        update.effective_message.text or ""
+        update.effective_message.text
+        or ""
     ).split(
         " ",
         2
     )
 
     if len(parts) < 3:
+
         await update.effective_message.reply_text(
             info_box(
                 "ব্যবহার: `/translate bn Hello brother`"
             )
         )
+
         return
 
     result = await ask_gemini(
@@ -2063,16 +3389,24 @@ async def translate_command(update, context):
     ] = result
 
     await update.effective_message.reply_text(
-        "🌐 TRANSLATION\n\n" + result
+        "🌐 TRANSLATION\n\n"
+        + result
     )
 
-async def translate_last_command(update, context):
+
+async def translate_last_command(
+    update,
+    context
+):
+
     if not context.args:
+
         await update.effective_message.reply_text(
             info_box(
                 "ব্যবহার: `/translate_last bn`"
             )
         )
+
         return
 
     last = user_last_ai_reply.get(
@@ -2080,11 +3414,13 @@ async def translate_last_command(update, context):
     )
 
     if not last:
+
         await update.effective_message.reply_text(
             error_box(
                 "আপনার কোনো আগের AI Reply পাওয়া যায়নি।"
             )
         )
+
         return
 
     result = await ask_gemini(
@@ -2099,9 +3435,16 @@ async def translate_last_command(update, context):
         + result
     )
 
-# ========================= START / HELP / ABOUT ===============
 
-async def start_command(update, context):
+# ============================================================
+# START
+# ============================================================
+
+async def start_command(
+    update,
+    context
+):
+
     register_user(
         update.effective_user
     )
@@ -2111,6 +3454,7 @@ async def start_command(update, context):
     if is_owner(
         update.effective_user
     ):
+
         text = (
             "👑 বস, Welcome Back!\n\n"
             "💎 RJ TEAM BANGLADESH Premium AI Bot\n"
@@ -2121,6 +3465,7 @@ async def start_command(update, context):
         )
 
     else:
+
         text = (
             vip_header(
                 "WELCOME"
@@ -2137,7 +3482,16 @@ async def start_command(update, context):
         text
     )
 
-async def about_command(update, context):
+
+# ============================================================
+# ABOUT
+# ============================================================
+
+async def about_command(
+    update,
+    context
+):
+
     await update.effective_message.reply_text(
         vip_header(
             "ABOUT RJ TEAM"
@@ -2152,10 +3506,20 @@ async def about_command(update, context):
         + vip_footer()
     )
 
-async def help_command(update, context):
+
+# ============================================================
+# HELP
+# ============================================================
+
+async def help_command(
+    update,
+    context
+):
+
     if is_owner(
         update.effective_user
     ):
+
         text = (
             vip_header(
                 "OWNER CONTROL"
@@ -2206,12 +3570,14 @@ async def help_command(update, context):
 
             "💎 SMS → Group OFF থাকলে "
             "আপনার সাধারণ প্রশ্নের AI উত্তর আসবে।\n"
+
             "🟢 SMS → Group ON থাকলে "
             "আপনার সাধারণ text AI caption হয়ে "
             "active Group/Channel-এ যাবে।"
         )
 
     else:
+
         text = (
             vip_header(
                 "PREMIUM AI HELP"
@@ -2226,18 +3592,38 @@ async def help_command(update, context):
         text
     )
 
-async def cancel_command(update, context):
-    if await require_owner(update):
+
+# ============================================================
+# CANCEL
+# ============================================================
+
+async def cancel_command(
+    update,
+    context
+):
+
+    if await require_owner(
+        update
+    ):
+
         await update.effective_message.reply_text(
             owner_reply(
                 "❌ কোনো pending operation ছিল না।"
             )
         )
 
-# ========================= NORMAL TEXT ========================
 
-async def normal_message(update, context):
+# ============================================================
+# NORMAL TEXT
+# ============================================================
+
+async def normal_message(
+    update,
+    context
+):
+
     message = update.effective_message
+
     user = update.effective_user
 
     if not message or not user:
@@ -2250,8 +3636,15 @@ async def normal_message(update, context):
     if not text:
         return
 
-    register_user(user)
+    register_user(
+        user
+    )
+
     save_all()
+
+    # ========================================================
+    # OWNER
+    # ========================================================
 
     if is_owner(user):
 
@@ -2260,16 +3653,20 @@ async def normal_message(update, context):
             context,
             text
         ):
+
             return
 
         if OWNER_SMS_TO_GROUP:
+
             ai_post = await create_ai_post(
                 text
             )
 
-            sent, failed = await send_to_groups(
-                context,
-                ai_post
+            sent, failed = (
+                await send_to_groups(
+                    context,
+                    ai_post
+                )
             )
 
             await message.reply_text(
@@ -2283,6 +3680,7 @@ async def normal_message(update, context):
             )
 
         else:
+
             answer = await ask_gemini(
                 "Owner @RJteam1 বলেছেন:\n\n"
                 + text
@@ -2300,6 +3698,10 @@ async def normal_message(update, context):
 
         return
 
+    # ========================================================
+    # NORMAL USER
+    # ========================================================
+
     uid = str(
         user.id
     )
@@ -2308,17 +3710,20 @@ async def normal_message(update, context):
         uid,
         False
     ):
+
         ai_post = await create_ai_post(
             text
         )
 
-        sent, failed = await send_to_groups(
-            context,
-            ai_post
+        sent, failed = (
+            await send_to_groups(
+                context,
+                ai_post
+            )
         )
 
         await message.reply_text(
-            "💎 Premium Post তৈরি হয়েছে।\n\n"
+            "💎 Premium Post তৈরি হয়েছে.\n\n"
             f"📢 Group/Channel Sent: {sent}"
         )
 
@@ -2336,29 +3741,47 @@ async def normal_message(update, context):
         answer
     )
 
-# ========================= HEALTH =============================
 
-class HealthHandler(BaseHTTPRequestHandler):
+# ============================================================
+# HEALTH SERVER
+# ============================================================
+
+class HealthHandler(
+    BaseHTTPRequestHandler
+):
 
     def do_GET(self):
-        self.send_response(200)
+
+        self.send_response(
+            200
+        )
+
         self.send_header(
             "Content-Type",
             "text/plain; charset=utf-8"
         )
+
         self.end_headers()
 
         self.wfile.write(
             b"RJ TEAM BANGLADESH PREMIUM AI BOT is running."
         )
 
-    def log_message(self, format, *args):
+    def log_message(
+        self,
+        format,
+        *args
+    ):
+
         return
 
+
 def start_health_server():
+
     global health_thread
 
     try:
+
         server = HTTPServer(
             (
                 "0.0.0.0",
@@ -2380,39 +3803,65 @@ def start_health_server():
         )
 
     except Exception:
+
         logging.exception(
             "Health server failed"
         )
 
-# ========================= INIT ===============================
 
-async def post_init(application):
+# ============================================================
+# POST INIT
+# ============================================================
+
+async def post_init(
+    application
+):
+
     global scheduler_task
 
     init_firebase()
+
     firebase_load()
 
+    # If Firebase does not contain destination data,
+    # recover local backup.
     if (
-        not autopost_data.get("groups")
-        and os.path.exists(AUTOPOST_FILE)
+        not autopost_data.get(
+            "groups"
+        )
+        and os.path.exists(
+            AUTOPOST_FILE
+        )
     ):
+
         load_local()
 
-    # Optional ENV-configured destinations
+    normalize_storage()
+
+    # ========================================================
+    # ENV TARGET CHAT IDs
+    # ========================================================
+
     if TARGET_CHAT_ID:
+
         for raw_id in TARGET_CHAT_ID.split(","):
+
             raw_id = raw_id.strip()
 
             if not raw_id:
                 continue
 
             try:
-                cid = int(raw_id)
 
-                # Telegram groups/channels normally have negative IDs.
+                cid = int(
+                    raw_id
+                )
+
                 if cid >= 0:
+
                     logging.warning(
-                        "TARGET_CHAT_ID does not look like a group/channel ID: %s",
+                        "TARGET_CHAT_ID does not look like "
+                        "a group/channel ID: %s",
                         cid
                     )
 
@@ -2426,12 +3875,15 @@ async def post_init(application):
                         "title": "Configured Destination",
                         "username": "",
                         "type": "group",
-                        "added_at": datetime.now(BD).isoformat(),
+                        "added_at": datetime.now(
+                            BD
+                        ).isoformat(),
                         "active": True,
                     }
                 )
 
             except Exception:
+
                 logging.warning(
                     "Invalid TARGET_CHAT_ID: %s",
                     raw_id
@@ -2439,10 +3891,17 @@ async def post_init(application):
 
     save_all()
 
+    # ========================================================
+    # AUTO POST WORKER
+    # ========================================================
+
     if scheduler_task is None:
-        scheduler_task = asyncio.create_task(
-            autopost_worker(
-                application
+
+        scheduler_task = (
+            asyncio.create_task(
+                autopost_worker(
+                    application
+                )
             )
         )
 
@@ -2450,22 +3909,45 @@ async def post_init(application):
         "RJ TEAM BANGLADESH bot initialized."
     )
 
-async def callback_handler(update, context):
+
+# ============================================================
+# CALLBACK
+# ============================================================
+
+async def callback_handler(
+    update,
+    context
+):
+
     if update.callback_query:
+
         await update.callback_query.answer()
 
-async def error_handler(update, context):
+
+# ============================================================
+# ERROR HANDLER
+# ============================================================
+
+async def error_handler(
+    update,
+    context
+):
+
     logging.error(
         "Telegram update error: %s",
         context.error,
         exc_info=context.error
     )
 
-# ========================= MAIN ===============================
+
+# ============================================================
+# MAIN
+# ============================================================
 
 def main():
 
     if not BOT_TOKEN:
+
         raise RuntimeError(
             "BOT_TOKEN environment variable is missing."
         )
@@ -2480,18 +3962,38 @@ def main():
         level=logging.INFO
     )
 
+    # ========================================================
+    # LOAD
+    # ========================================================
+
     load_local()
+
     normalize_storage()
+
     init_firebase()
+
     init_gemini()
+
     start_health_server()
+
+    # ========================================================
+    # APPLICATION
+    # ========================================================
 
     app = (
         Application.builder()
-        .token(BOT_TOKEN)
-        .post_init(post_init)
+        .token(
+            BOT_TOKEN
+        )
+        .post_init(
+            post_init
+        )
         .build()
     )
+
+    # ========================================================
+    # COMMANDS
+    # ========================================================
 
     commands = {
 
@@ -2542,6 +4044,7 @@ def main():
     }
 
     for name, handler in commands.items():
+
         app.add_handler(
             CommandHandler(
                 name,
@@ -2549,11 +4052,19 @@ def main():
             )
         )
 
+    # ========================================================
+    # CALLBACK
+    # ========================================================
+
     app.add_handler(
         CallbackQueryHandler(
             callback_handler
         )
     )
+
+    # ========================================================
+    # PHOTO
+    # ========================================================
 
     app.add_handler(
         MessageHandler(
@@ -2562,26 +4073,51 @@ def main():
         )
     )
 
+    # ========================================================
+    # TEXT
+    # ========================================================
+
     app.add_handler(
         MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
+            filters.TEXT
+            & ~filters.COMMAND,
             normal_message
         )
     )
+
+    # ========================================================
+    # ERROR
+    # ========================================================
 
     app.add_error_handler(
         error_handler
     )
 
     logging.info(
-        "👑 RJ TEAM BANGLADESH PREMIUM AI BOT | Owner: @%s",
+        "👑 RJ TEAM BANGLADESH PREMIUM AI BOT | "
+        "Owner: @%s",
         ADMIN_USERNAME
     )
+
+    logging.info(
+        "🤖 Gemini models configured: %s",
+        ", ".join(
+            GEMINI_MODELS
+        )
+    )
+
+    # ========================================================
+    # RUN
+    # ========================================================
 
     app.run_polling(
         drop_pending_updates=True
     )
 
+
+# ============================================================
+# START
+# ============================================================
 
 if __name__ == "__main__":
     main()
