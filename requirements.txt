@@ -1,4 +1,3 @@
-python-telegram-bot[webhooks]
-firebase-admin
+python-telegram-bot
 google-genai
-tzdata
+firebase-admin
